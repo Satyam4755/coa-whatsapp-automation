@@ -1,0 +1,76 @@
+services:
+  mongo:
+    image: mongo:7
+    container_name: coa-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  redis:
+    image: redis:7-alpine
+    container_name: coa-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  server:
+    build:
+      context: ./Server
+    container_name: coa-server
+    restart: unless-stopped
+    depends_on:
+      - mongo
+      - redis
+    ports:
+      - "8080:8080"
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: 8080
+      CLIENT_URL: ${CLIENT_URL:-http://localhost:5173}
+      MONGO_URI: ${MONGO_URI:-mongodb://mongo:27017/coa_whatsapp_automation}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      BULK_JOB_CONCURRENCY: ${BULK_JOB_CONCURRENCY:-1}
+      WA_RATE_LIMIT_PER_SECOND: ${WA_RATE_LIMIT_PER_SECOND:-5}
+      WA_RATE_LIMIT_PER_MINUTE: ${WA_RATE_LIMIT_PER_MINUTE:-300}
+      ADMIN_SECRET_KEY: ${ADMIN_SECRET_KEY:-dev_admin_secret_change_me}
+      ADMIN_ACCESS_TOKEN_SECRET: ${ADMIN_ACCESS_TOKEN_SECRET:-dev_access_secret_change_me}
+      ADMIN_REFRESH_TOKEN_SECRET: ${ADMIN_REFRESH_TOKEN_SECRET:-dev_refresh_secret_change_me}
+      ADMIN_ACCESS_TOKEN_EXPIRES_IN: ${ADMIN_ACCESS_TOKEN_EXPIRES_IN:-15m}
+      ADMIN_REFRESH_TOKEN_EXPIRES_IN: ${ADMIN_REFRESH_TOKEN_EXPIRES_IN:-7d}
+      ADMIN_REFRESH_COOKIE_MAX_AGE_MS: ${ADMIN_REFRESH_COOKIE_MAX_AGE_MS:-604800000}
+      CLOUDINARY_CLOUD_NAME: ${CLOUDINARY_CLOUD_NAME:-}
+      CLOUDINARY_API_KEY: ${CLOUDINARY_API_KEY:-}
+      CLOUDINARY_API_SECRET: ${CLOUDINARY_API_SECRET:-}
+      WA_ACCESS_TOKEN: ${WA_ACCESS_TOKEN:-}
+      WA_PHONE_NUMBER_ID: ${WA_PHONE_NUMBER_ID:-}
+      WA_BUSINESS_ACCOUNT_ID: ${WA_BUSINESS_ACCOUNT_ID:-}
+      WA_APP_ID: ${WA_APP_ID:-}
+      COA_WELCOME_IMAGE: ${COA_WELCOME_IMAGE:-}
+      HELPLINE_EMAIL: ${HELPLINE_EMAIL:-support@example.com}
+      HELPLINE_NUMBER: ${HELPLINE_NUMBER:-011-00000000}
+      COURIER_COMPANY_NAME: ${COURIER_COMPANY_NAME:-India Post}
+    volumes:
+      - server_uploads:/app/uploads
+
+  client:
+    build:
+      context: ./Client
+      args:
+        VITE_SERVER_URL: ${VITE_SERVER_URL:-http://localhost:8080}
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8080/api}
+    container_name: coa-client
+    restart: unless-stopped
+    depends_on:
+      - server
+    ports:
+      - "5173:80"
+
+volumes:
+  mongo_data:
+  redis_data:
+  server_uploads:
