@@ -520,16 +520,6 @@ async function handleArchitectStatus(userNumber, registrationNumber) {
   return handleArchitectSearchFlow(userNumber, registrationNumber);
 }
 
-async function handleArchitectOTPVerification(userNumber, enteredOTP) {
-  if (enteredOTP !== userStates[userNumber].otp?.toString()) {
-    return sendTextMessage(userNumber, "Incorrect OTP. Please try again.");
-  }
-
-  const architectStatus = `The status for registration number ${userStates[userNumber].registrationNumber} is ${userStates[userNumber].status}, with validity up to ${userStates[userNumber].archValidityUpTo}.`;
-  sendTextMessage(userNumber, architectStatus);
-  userStates[userNumber] = {};
-}
-
 async function handleTextMessage(userNumber, rawUserMessage) {
   const userMessage = (rawUserMessage || "").trim();
   const lower = userMessage.toLowerCase();
@@ -549,20 +539,11 @@ async function handleTextMessage(userNumber, rawUserMessage) {
       case "architect_status":
         await handleArchitectSearchFlow(userNumber, userMessage);
         return;
-      case "otp_verification_architect":
-        await handleArchitectOTPVerification(userNumber, userMessage);
-        return;
       case "dispatch_status":
         await handleDispatchStatus(userNumber, userMessage);
         return;
       case "application_status":
         await handleApplicationStatus(userNumber, userMessage);
-        return;
-      case "otp_verification_dispatch":
-        await handleDispatchOTPVerification(userNumber, userMessage);
-        return;
-      case "otp_verification_application":
-        await handleApplicationOTPVerification(userNumber, userMessage);
         return;
       default:
         userStates[userNumber] = { attempts: 0 };
@@ -652,7 +633,7 @@ async function handleApplicationStatus(userNumber, applicationNumber) {
 
     userStates[userNumber].attempts = 0;
 
-const applicationAPIURL = process.env.NODE_ENV === "production" ? `https://coa.gov.in/AllApplicantDataAPI.php?application_no=${applicationNumber}`:`https://coa.gov.in/staging/AllApplicantDataAPI.php?application_no=${applicationNumber}`;
+    const applicationAPIURL = process.env.NODE_ENV === "production" ? `https://coa.gov.in/AllApplicantDataAPI.php?application_no=${applicationNumber}`:`https://coa.gov.in/staging/AllApplicantDataAPI.php?application_no=${applicationNumber}`;
 
     const response = await axios.get(
       applicationAPIURL,
@@ -681,63 +662,17 @@ const applicationAPIURL = process.env.NODE_ENV === "production" ? `https://coa.g
     }
 
     const status = applicantData?.appStatus || "Not Available";
-    const applicantMobile = applicantData?.Mobile?.toString();
-    const senderMobile = userNumber.startsWith("91")
-      ? userNumber.substring(2)
-      : userNumber;
-
-    if (!applicantMobile) {
-      const responseMessage = `Dear Applicant, \nNo mobile number is associated with application number (${applicationNumber}). \n\nPlease contact COA team for assistance:\nEmail: ${process.env.HELPLINE_EMAIL}\nPhone: ${process.env.HELPLINE_NUMBER}`;
-      sendTextMessage(userNumber, responseMessage);
-      userStates[userNumber] = {};
-      return;
-    }
-
-    if (applicantMobile === senderMobile) {
-      const responseMessage = `The status for Application No. ${applicationNumber} is ${status}.`;
-      sendTextMessage(userNumber, responseMessage);
-      userStates[userNumber] = {};
-    } else {
-      await initiateOTPVerification(
-        userNumber,
-        applicantMobile,
-        "otp_verification_application",
-        {
-          applicationNumber: applicationNumber,
-          status: status,
-        }
-      );
-    }
+    const responseMessage = `The status for Application No. ${applicationNumber} is ${status}.`;
+    sendTextMessage(userNumber, responseMessage);
+    userStates[userNumber] = {};
   } catch (error) {
-    console.error("Error initiating application status check:", error);
+    console.error("Error checking application status:", error);
     sendTextMessage(
       userNumber,
       "Something went wrong while checking application status. Please try again."
     );
     userStates[userNumber] = {};
   }
-}
-
-async function handleApplicationOTPVerification(userNumber, enteredOTP) {
-  if (enteredOTP !== userStates[userNumber].otp?.toString()) {
-    userStates[userNumber].otpAttempts =
-      (userStates[userNumber].otpAttempts || 0) + 1;
-
-    if (userStates[userNumber].otpAttempts >= 3) {
-      sendTextMessage(
-        userNumber,
-        "Maximum OTP attempts reached. Please start over."
-      );
-      userStates[userNumber] = {};
-      return sendWelcomeMessage(userNumber);
-    }
-
-    return sendTextMessage(userNumber, "Incorrect OTP. Please try again.");
-  }
-
-  const applicationStatus = `The status for Application No. ${userStates[userNumber].applicationNumber} is ${userStates[userNumber].status}.`;
-  sendTextMessage(userNumber, applicationStatus);
-  userStates[userNumber] = {};
 }
 
 async function handleDispatchStatus(userNumber, mobileNumber) {
@@ -772,13 +707,10 @@ async function handleDispatchStatus(userNumber, mobileNumber) {
 
     const dispatchAPIURL = process.env.NODE_ENV === "production" ? `https://ecoa.in/api/letter-documents/${mobileNumber}`:`https://ecoa.in/ecoa_staging/public/api/letter-documents/${mobileNumber}`;
 
-
-
     const dispatchData = await axios.get(
       dispatchAPIURL,
       { httpsAgent }
     );
-
 
     if (
       !dispatchData.data?.data?.length ||
@@ -792,65 +724,12 @@ async function handleDispatchStatus(userNumber, mobileNumber) {
     }
 
     const isDispatched = dispatchData.data.data.filter((item) => item?.barcode);
-    const lastDispatched = isDispatched[isDispatched.length - 1];
-    const applicantMobile = lastDispatched?.contact?.toString();
-    const senderMobile = userNumber.startsWith("91")
-      ? userNumber.substring(2)
-      : userNumber;
-
-    if (applicantMobile === senderMobile) {
-      return handleDispatchResponse(userNumber, isDispatched);
-    }
-
-    await initiateOTPVerification(
-      userNumber,
-      applicantMobile,
-      "otp_verification_dispatch",
-      { mobileNumber: mobileNumber }
-    );
+    handleDispatchResponse(userNumber, isDispatched);
   } catch (error) {
     console.error("Error checking dispatch status:", error);
     sendTextMessage(
       userNumber,
       "Error checking dispatch status. Please try again."
-    );
-    userStates[userNumber] = {};
-  }
-}
-
-async function handleDispatchOTPVerification(userNumber, enteredOTP) {
-  if (enteredOTP !== userStates[userNumber].otp?.toString()) {
-    userStates[userNumber].otpAttempts =
-      (userStates[userNumber].otpAttempts || 0) + 1;
-
-    if (userStates[userNumber].otpAttempts >= 3) {
-      sendTextMessage(
-        userNumber,
-        "Maximum OTP attempts reached. Please start over."
-      );
-      userStates[userNumber] = {};
-      return sendWelcomeMessage(userNumber);
-    }
-
-    return sendTextMessage(userNumber, "Incorrect OTP. Please try again.");
-  }
-
-  try {
-
-    const dispatchAPIURL = process.env.NODE_ENV === "production" ? `https://ecoa.in/api/letter-documents/${userStates[userNumber].mobileNumber}`:`https://ecoa.in/ecoa_staging/public/api/letter-documents/${userStates[userNumber].mobileNumber}`;
-
-    const response = await axios.get(
-      dispatchAPIURL,
-      { httpsAgent }
-    );
-
-    const isDispatched = response.data.data.filter((item) => item?.barcode);
-    handleDispatchResponse(userNumber, isDispatched);
-  } catch (error) {
-    console.error("Error verifying dispatch OTP:", error);
-    sendTextMessage(
-      userNumber,
-      "Error verifying dispatch status. Please try again."
     );
     userStates[userNumber] = {};
   }
@@ -871,76 +750,6 @@ function handleDispatchResponse(userNumber, dispatchedItems) {
     sendTextMessage(userNumber, dispatchStatus);
   }
   userStates[userNumber] = {};
-}
-
-async function initiateOTPVerification(
-  userNumber,
-  recipientMobile,
-  nextState,
-  additionalState = {}
-) {
-  const otp = Math.floor(100000 + Math.random() * 900000);
-
-  userStates[userNumber] = {
-    ...userStates[userNumber],
-    otp,
-    awaiting: nextState,
-    applicant_mobile: recipientMobile,
-    ...additionalState,
-  };
-
-  const otpTemplatePayload = {
-    messaging_product: "whatsapp",
-    to: recipientMobile.startsWith("91")
-      ? recipientMobile
-      : `91${recipientMobile}`,
-    type: "template",
-    template: {
-      name: "coa_verification_otp",
-      language: { code: "en" },
-      components: [
-        {
-          type: "body",
-          parameters: [{ type: "text", text: otp.toString() }],
-        },
-        {
-          type: "button",
-          sub_type: "url",
-          index: 0,
-          parameters: [
-            {
-              type: "text",
-              text: otp.toString(),
-            },
-          ],
-        },
-      ],
-    },
-  };
-
-  const headers = {
-    Authorization: `Bearer ${WA_ACCESS_TOKEN}`,
-    "Content-Type": "application/json",
-  };
-
-  try {
-    await axios.post(
-      `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`,
-      otpTemplatePayload,
-      { headers }
-    );
-    const otpMessage = `Enter the OTP sent to your registered mobile number ****${recipientMobile.slice(
-      -4
-    )} to verify your identity.`;
-    sendTextMessage(userNumber, otpMessage);
-  } catch (error) {
-    console.error(
-      "Error sending OTP template:",
-      error.response?.data || error.message
-    );
-    sendTextMessage(userNumber, "Error sending OTP. Please try again.");
-    userStates[userNumber] = {};
-  }
 }
 
 app.get("/webhook", (req, res) => {

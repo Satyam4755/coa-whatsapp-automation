@@ -198,6 +198,26 @@ async function runTests() {
     });
   });
 
+  // 18. OTP Removal Verification - Ensure no OTP code in WhatsApp conversation flow
+  await asyncTest("18. Verification - No OTP functions or conversation states remain in server.js", async () => {
+    const fs = await import("fs");
+    const serverCode = fs.readFileSync("./server.js", "utf-8");
+    const otpKeywords = [
+      "otp_verification_architect",
+      "otp_verification_application",
+      "otp_verification_dispatch",
+      "initiateOTPVerification",
+      "handleArchitectOTPVerification",
+      "handleApplicationOTPVerification",
+      "handleDispatchOTPVerification",
+      "coa_verification_otp",
+    ];
+
+    for (const kw of otpKeywords) {
+      assert.ok(!serverCode.includes(kw), `OTP keyword "${kw}" must not be present in server.js`);
+    }
+  });
+
   console.log("\n==================================================");
   console.log(`📊 FINAL TEST REPORT: ${passed} Passed, ${failed} Failed`);
   console.log("==================================================");
