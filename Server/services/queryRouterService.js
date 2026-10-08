@@ -18,7 +18,6 @@ export const DEPARTMENT_DATA = {
     name: "Renewal Department",
     category: "Renewal",
     email: "registration-renewal-coa@coa.gov.in",
-    phone: "011-49412100",
     whatsappHelpdesk: "+91 70429 39122",
     portal: "https://coa.org.in/e-services/renewal-registration",
     ticketSystem:
@@ -28,19 +27,15 @@ export const DEPARTMENT_DATA = {
   NATA: {
     name: "NATA (National Aptitude Test in Architecture)",
     category: "NATA",
-    email: "nata-coa@gov.in",
-    phone: "011-49412100",
     website: "https://www.nata.in",
     portal: "https://coa.gov.in",
     ticketSystem:
       "https://ecoa.in/samarthaya/public/requestQuery?lang=1&level=1&sublinkid=1317&lid=1189",
-    description: "NATA Exam Schedule, Registration, Scorecards & Admissions",
+    description: "NATA Exam Information, Scorecards & Admissions",
   },
   PGETA: {
     name: "PGETA Department",
     category: "PGETA",
-    email: "pgeta-coa@gov.in",
-    phone: "011-49412100",
     website: "https://coa.gov.in",
     ticketSystem:
       "https://ecoa.in/samarthaya/public/requestQuery?lang=1&level=1&sublinkid=1317&lid=1189",
@@ -49,18 +44,14 @@ export const DEPARTMENT_DATA = {
   EDUCATION: {
     name: "Education & Institution Department",
     category: "Education",
-    email: "education-coa@gov.in",
-    phone: "011-49412100",
     website: "https://coa.gov.in",
     ticketSystem:
       "https://ecoa.in/samarthaya/public/requestQuery?lang=1&level=1&sublinkid=1317&lid=1189",
     description: "Architectural Institutions, Inspection, Minimum Standards & Approval",
   },
   GENERAL: {
-    name: "General Helpdesk & Grievance",
+    name: "Other CoA Departments & Services",
     category: "Other CoA Services",
-    email: "renewal-coa@gov.in",
-    phone: "011-49412100",
     website: "https://coa.gov.in",
     ticketSystem:
       "https://ecoa.in/samarthaya/public/requestQuery?lang=1&level=1&sublinkid=1317&lid=1189",
@@ -70,25 +61,69 @@ export const DEPARTMENT_DATA = {
 
 class QueryRouterService {
   /**
-   * Format department contact response for WhatsApp
+   * Format department contact response for WhatsApp aligned with CoA recommendations
    */
   formatDepartmentResponse(deptKey) {
-    const dept = DEPARTMENT_DATA[deptKey] || DEPARTMENT_DATA.GENERAL;
+    if (deptKey === "REGISTRATION") {
+      return (
+        `Dear Architect,\n\n` +
+        `Kindly email us your query at registration-coa@coa.gov.in or contact our Registration Department at 011-49412100.\n\n` +
+        `Feel free to reach out here in case of any further issues.\n\n` +
+        `Or visit https://coa.org.in/e-services/register-architect for more details\n\n` +
+        `Or Ticket System:\nhttps://ecoa.in/samarthaya/public/requestQuery?lang=1&level=1&sublinkid=1317&lid=1189\n\n` +
+        `_Type "menu" to return to the main menu._`
+      );
+    }
 
-    let text = `🏛️ *Council of Architecture — ${dept.name}*\n\n`;
-    text += `📌 *Services:* ${dept.description}\n\n`;
-    text += `📞 *Contact Information:*\n`;
-    if (dept.email) text += `• *Email:* ${dept.email}\n`;
-    if (dept.phone) text += `• *Phone:* ${dept.phone}\n`;
-    if (dept.whatsappHelpdesk) text += `• *WhatsApp Renewal Helpdesk:* ${dept.whatsappHelpdesk}\n`;
+    if (deptKey === "RENEWAL") {
+      return (
+        `Dear Architect,\n\n` +
+        `Kindly email us your query at registration-renewal-coa@coa.gov.in or WhatsApp our CoA Renewal Helpdesk at +91 70429 39122.\n\n` +
+        `Feel free to reach out here in case of any further issues.\n\n` +
+        `Or visit https://coa.org.in/e-services/renewal-registration for more details\n\n` +
+        `Or Ticket System:\nhttps://ecoa.in/samarthaya/public/requestQuery?lang=1&level=1&sublinkid=1317&lid=1189\n\n` +
+        `_Type "menu" to return to the main menu._`
+      );
+    }
 
-    text += `\n🔗 *Official Links:*\n`;
-    if (dept.portal) text += `• *Portal:* ${dept.portal}\n`;
-    if (dept.website) text += `• *Website:* ${dept.website}\n`;
-    if (dept.ticketSystem) text += `• *Online Ticket / Grievance:* ${dept.ticketSystem}\n`;
+    if (deptKey === "NATA") {
+      return (
+        `Dear Architect / Candidate,\n\n` +
+        `For queries related to NATA (National Aptitude Test in Architecture), please visit the official NATA website or the CoA portal:\n\n` +
+        `• Official NATA Website: https://www.nata.in\n` +
+        `• CoA Official Website: https://coa.gov.in\n` +
+        `• Ticket System: https://ecoa.in/samarthaya/public/requestQuery?lang=1&level=1&sublinkid=1317&lid=1189\n\n` +
+        `_Type "menu" to return to the main menu._`
+      );
+    }
 
-    text += `\n_Type "menu" to return to the main menu._`;
-    return text;
+    if (deptKey === "PGETA") {
+      return (
+        `Dear Architect / Candidate,\n\n` +
+        `For queries related to PGETA (Post Graduate Examination in Training & Architecture), please visit the official CoA website or submit a query via the Ticket System:\n\n` +
+        `• Official Website: https://coa.gov.in\n` +
+        `• Ticket System: https://ecoa.in/samarthaya/public/requestQuery?lang=1&level=1&sublinkid=1317&lid=1189\n\n` +
+        `_Type "menu" to return to the main menu._`
+      );
+    }
+
+    if (deptKey === "EDUCATION") {
+      return (
+        `Dear Architect / Institution,\n\n` +
+        `For queries related to Architecture Education & Institutions (Approval, Minimum Standards, Syllabus), please visit the official website or submit a query via the Ticket System:\n\n` +
+        `• Official Website: https://coa.gov.in\n` +
+        `• Ticket System: https://ecoa.in/samarthaya/public/requestQuery?lang=1&level=1&sublinkid=1317&lid=1189\n\n` +
+        `_Type "menu" to return to the main menu._`
+      );
+    }
+
+    return (
+      `Dear Architect / User,\n\n` +
+      `For queries related to other Council of Architecture departments and services, please submit your request through the Samarthaya Ticket System:\n\n` +
+      `• Online Ticket System: https://ecoa.in/samarthaya/public/requestQuery?lang=1&level=1&sublinkid=1317&lid=1189\n` +
+      `• Official Website: https://coa.gov.in\n\n` +
+      `_Type "menu" to return to the main menu._`
+    );
   }
 
   /**
@@ -102,11 +137,12 @@ class QueryRouterService {
     const text = rawMessage.trim();
     const lower = text.toLowerCase();
 
-    // 1. Menu / Reset triggers
+    // 1. Menu / Greeting triggers (matches hi, hii, hiii, hello, hey, heyy, start, menu, etc.)
     if (
-      ["menu", "main menu", "hi", "hello", "hey", "start", "options", "help", "home"].includes(
+      /^(?:hi+|hello+|hey+|namaste|good\s*(?:morning|afternoon|evening)|start|menu|main\s*menu|options|help|home)$/i.test(
         lower
-      )
+      ) ||
+      (/^(?:hi+|hello+|hey+|namaste)\b/i.test(lower) && lower.length <= 15)
     ) {
       return { type: "MENU", raw: text };
     }
@@ -257,7 +293,7 @@ class QueryRouterService {
       };
     }
 
-    // Ticket / Grievance / Samarthaya / Contact / Office
+    // Ticket / Grievance / Samarthaya / Contact / Office / Other Departments
     if (
       lower.includes("ticket") ||
       lower.includes("samarthaya") ||
@@ -266,7 +302,12 @@ class QueryRouterService {
       lower.includes("contact") ||
       lower.includes("helpline") ||
       lower.includes("address") ||
-      lower.includes("phone number")
+      lower.includes("phone number") ||
+      lower.includes("other") ||
+      lower.includes("another") ||
+      lower.includes("department") ||
+      lower.includes("services") ||
+      lower.includes("general")
     ) {
       return {
         type: "DEPARTMENT_QUERY",

@@ -351,20 +351,39 @@ const cronAPIURL = process.env.NODE_ENV === "production" ? `https://coa.gov.in/A
   }
 });
 
+const processedMessageIds = new Map();
+
 app.post("/webhook", async (req, res) => {
   try {
-    const change = req?.body?.entry?.[0]?.changes?.[0];
-
-    if (!req.body?.object === "whatsapp_business_account") {
+    if (req.body?.object !== "whatsapp_business_account") {
       return res.status(400).send("Invalid request");
     }
 
+    const change = req?.body?.entry?.[0]?.changes?.[0];
     if (!change) {
       return res.sendStatus(200);
     }
 
     if (change?.value?.messages) {
       const message = change.value.messages[0];
+      const messageId = message?.id;
+
+      // Webhook message deduplication to ensure idempotency
+      if (messageId) {
+        if (processedMessageIds.has(messageId)) {
+          console.log(`Duplicate webhook message ${messageId} ignored.`);
+          return res.sendStatus(200);
+        }
+        processedMessageIds.set(messageId, Date.now());
+
+        // Clean up cache entries older than 15 minutes
+        if (processedMessageIds.size > 2000) {
+          const cutoff = Date.now() - 15 * 60 * 1000;
+          for (const [id, time] of processedMessageIds.entries()) {
+            if (time < cutoff) processedMessageIds.delete(id);
+          }
+        }
+      }
 
       const userNumber = message.from;
       if (!userNumber) {
@@ -392,7 +411,6 @@ app.post("/webhook", async (req, res) => {
       }
     } else if (change?.value?.statuses) {
       console.log("Status Update:", change.value.statuses[0]);
-      console.log("Full Status Data:", JSON.stringify(change.value.statuses[0], null, 2));
     }
 
     res.sendStatus(200);
@@ -448,7 +466,7 @@ async function handleButtonClick(userNumber, buttonTitle) {
 function sendWelcomeMessage(userNumber) {
   const welcomeMessage = `Welcome to the Council of Architecture. We are available 24/7 to answer your queries. You can enquire, provide feedback, and ask for support. Please select an option to continue.`;
   const buttons = [
-    { type: "text", text: "Architect Status" },
+    { type: "text", text: "Search Architect" },
     { type: "text", text: "Application Status" },
     { type: "text", text: "Dispatch Status" },
   ];
@@ -461,7 +479,7 @@ async function handleArchitectSearchFlow(userNumber, searchQuery) {
     if (!term) {
       sendTextMessage(
         userNumber,
-        "Please enter an Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search."
+        "🏛️ *Search Architect / Verify Architect*\n\nPlease enter an Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search."
       );
       userStates[userNumber] = { awaiting: "search_architect", attempts: 0 };
       return;
@@ -480,11 +498,12 @@ async function handleArchitectSearchFlow(userNumber, searchQuery) {
 
     if (searchResult.architects.length === 1) {
       const arch = searchResult.architects[0];
+      const displayName = arch.name ? `Ar. ${arch.name}` : "Not Available";
       let msg = `🏛️ *Council of Architecture — Architect Details*\n\n`;
       msg += `• *Registration No:* ${arch.regNumber || "Not Available"}\n`;
-      msg += `• *Architect Name:* Ar. ${arch.name || "Not Available"}\n`;
+      msg += `• *Architect Name:* ${displayName}\n`;
       msg += `• *Registration Status:* ${arch.status || "Active"}\n`;
-      msg += `• *Validity Upto:* ${arch.validity || "Not Available"}\n`;
+      msg += `• *Validity:* ${arch.validity || "Not Available"}\n`;
       if (arch.maskedEmail) msg += `• *Email:* ${arch.maskedEmail}\n`;
       if (arch.maskedMobile) msg += `• *Mobile:* ${arch.maskedMobile}\n`;
       if (arch.address) msg += `• *Address:* ${arch.address}\n`;
@@ -526,14 +545,47 @@ async function handleTextMessage(userNumber, rawUserMessage) {
   const userState = userStates[userNumber] || {};
   const awaiting = userState?.awaiting;
 
-  // 1. Menu and Greeting triggers
-  if (["menu", "main menu", "hi", "hello", "hey", "start", "options", "help", "home"].includes(lower)) {
+  // 1. Menu and Greeting triggers (e.g., hi, hii, hello, hey, start, menu, etc.)
+  const isGreetingOrMenu =
+    /^(?:hi+|hello+|hey+|namaste|good\s*(?:morning|afternoon|evening)|start|menu|main\s*menu|options|help|home)$/i.test(
+      lower
+    ) ||
+    (/^(?:hi+|hello+|hey+|namaste)\b/i.test(lower) && lower.length <= 15);
+
+  if (isGreetingOrMenu) {
     userStates[userNumber] = { attempts: 0 };
     return sendWelcomeMessage(userNumber);
   }
 
-  // 2. Active Awaiting States
+  // 2. Direct Registration Number Recognition (always prioritized)
+  const regNoMatch = userMessage.match(/\b(CA\/\d{2,4}\/\d{3,7})\b/i);
+  if (regNoMatch) {
+    userStates[userNumber] = {};
+    return handleArchitectSearchFlow(userNumber, regNoMatch[1].toUpperCase());
+  }
+
+  // 3. Active Awaiting States
   if (awaiting) {
+    // Check if the user is typing an explicit FAQ or Department query that should override the awaiting state
+    const earlyClassification = queryRouterService.classifyQuery(userMessage);
+    if (
+      earlyClassification.type === "FAQ" ||
+      earlyClassification.type === "DEPARTMENT_QUERY" ||
+      earlyClassification.type === "PROMPT_SEARCH_ARCHITECT"
+    ) {
+      userStates[userNumber] = {};
+      if (earlyClassification.type === "PROMPT_SEARCH_ARCHITECT") {
+        sendTextMessage(
+          userNumber,
+          "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search."
+        );
+        userStates[userNumber] = { awaiting: "search_architect", attempts: 0 };
+        return;
+      }
+      sendTextMessage(userNumber, earlyClassification.response);
+      return;
+    }
+
     switch (awaiting) {
       case "search_architect":
       case "architect_status":
@@ -551,7 +603,7 @@ async function handleTextMessage(userNumber, rawUserMessage) {
     }
   }
 
-  // 3. Automated Intelligent Classification & Query Routing
+  // 4. Automated Intelligent Classification & Query Routing
   const classification = queryRouterService.classifyQuery(userMessage);
 
   switch (classification.type) {
@@ -569,10 +621,12 @@ async function handleTextMessage(userNumber, rawUserMessage) {
 
     case "FAQ":
       sendTextMessage(userNumber, classification.response);
+      userStates[userNumber] = {};
       break;
 
     case "DEPARTMENT_QUERY":
       sendTextMessage(userNumber, classification.response);
+      userStates[userNumber] = {};
       break;
 
     case "MENU":
@@ -598,6 +652,7 @@ async function handleTextMessage(userNumber, rawUserMessage) {
           `• 🎫 *Samarthaya Ticket:* Type "Ticket"\n\n` +
           `_Type "menu" to view main options or ask your question directly._`;
         sendTextMessage(userNumber, guideMsg);
+        userStates[userNumber] = {};
       }
       break;
   }

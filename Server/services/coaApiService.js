@@ -88,6 +88,15 @@ class CoaApiService {
     return `${user[0]}${"*".repeat(Math.min(user.length - 2, 5))}${user.slice(-1)}@${domain}`;
   }
 
+  formatValidity(dateStr) {
+    if (!dateStr) return "Not Available";
+    const str = dateStr.toString().trim();
+    if (/one\s*time\s*payment|\botp\b|lifetime/i.test(str)) {
+      return "Valid Through: (One Time Payment)";
+    }
+    return this.formatDate(str);
+  }
+
   normalizeArchitect(raw) {
     if (!raw || typeof raw !== "object") return null;
 
@@ -99,12 +108,29 @@ class CoaApiService {
       raw.registrationNumber ||
       "";
 
-    const name =
+    let name =
       raw.archName ||
       raw.name ||
       raw.architect_name ||
       raw.architectName ||
       "";
+
+    if (!name || name.trim() === "") {
+      const parts = [
+        raw.archFirstName || raw.firstName || "",
+        raw.archMiddleName || raw.middleName || "",
+        raw.archLastName || raw.lastName || "",
+      ]
+        .map((p) => (p || "").toString().trim())
+        .filter(Boolean);
+
+      if (parts.length > 0) {
+        name = parts.join(" ");
+      }
+    }
+
+    // Clean up extra whitespace
+    name = (name || "").toString().replace(/\s+/g, " ").trim();
 
     const status =
       raw.archStatus ||
@@ -123,20 +149,35 @@ class CoaApiService {
     const mobile = raw.Mobile || raw.mobile || raw.contact || "";
     const email = raw.Email || raw.email || "";
     const dob = raw.archdob || raw.dob || "";
-    const address = raw.archAddress || raw.address || "";
+
+    // Assemble address from available address fields
+    let address =
+      raw.archAddress ||
+      raw.address ||
+      raw.CorresspondanceAddr ||
+      raw.PermanentAddr ||
+      "";
+
+    address = (address || "").toString().replace(/[\r\n]+/g, ", ").replace(/\s+/g, " ").trim();
+    if (raw.district && !address.toLowerCase().includes(raw.district.toLowerCase())) {
+      address += address ? `, ${raw.district}` : raw.district;
+    }
+    if (raw.pincode && !address.includes(raw.pincode)) {
+      address += address ? ` - ${raw.pincode}` : raw.pincode;
+    }
 
     return {
       regNumber: regNumber.toString().trim().toUpperCase(),
       name: name.toString().trim(),
       status: status.toString().trim(),
-      validity: rawValidity ? this.formatDate(rawValidity) : "Not Available",
+      validity: rawValidity ? this.formatValidity(rawValidity) : "Not Available",
       rawValidity: rawValidity,
       dob: dob ? this.formatDate(dob) : "",
       mobile: mobile ? mobile.toString() : "",
       maskedMobile: this.maskPhone(mobile),
       email: email.toString(),
       maskedEmail: this.maskEmail(email),
-      address: address.toString().trim(),
+      address: address,
     };
   }
 
