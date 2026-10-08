@@ -8,15 +8,18 @@ class ConversationService {
   }
 
   /**
-   * Helper to count max numeric suffix for a prefix (e.g. "coa" or "user") in a chat object
+   * Helper to count max numeric suffix for a prefix (e.g. "User Message" or "COA Response") in a chat object
    */
   getMaxIndex(chatObj, prefix) {
     if (!chatObj || typeof chatObj !== "object") return 0;
     let max = 0;
-    const prefixWithUnderscore = `${prefix}_`;
+    const regex = new RegExp(`^${prefix}\\s*(\\d+)$`, "i");
+    const fallbackRegex = new RegExp(`^${prefix.toLowerCase().startsWith("user") ? "user" : "coa"}_(\\d+)$`, "i");
+
     for (const key of Object.keys(chatObj)) {
-      if (key.startsWith(prefixWithUnderscore)) {
-        const num = parseInt(key.replace(prefixWithUnderscore, ""), 10);
+      const match = key.match(regex) || key.match(fallbackRegex);
+      if (match) {
+        const num = parseInt(match[1], 10);
         if (!isNaN(num) && num > max) {
           max = num;
         }
@@ -55,8 +58,8 @@ class ConversationService {
         if (latestDoc && latestDoc._id) {
           docId = latestDoc._id;
           chat = latestDoc.chat || {};
-          coaCount = this.getMaxIndex(chat, "coa");
-          userCount = this.getMaxIndex(chat, "user");
+          coaCount = this.getMaxIndex(chat, "COA Response");
+          userCount = this.getMaxIndex(chat, "User Message");
         }
       } catch (err) {
         console.warn("MongoDB check for active conversation warning:", err.message);
@@ -78,7 +81,7 @@ class ConversationService {
 
   /**
    * Atomically append a message to the user's conversation document
-   * Keys: coa_1, coa_2... for COA; user_1, user_2... for User
+   * Keys: "User Message 1", "User Message 2"... for User; "COA Response 1", "COA Response 2"... for COA
    */
   async logMessage({ userNumber, sender, message, messageId = null }) {
     if (!userNumber || !message) return null;
@@ -87,7 +90,7 @@ class ConversationService {
       const cleanNumber = userNumber.toString().trim();
       const messageText = typeof message === "string" ? message : JSON.stringify(message);
       const isUser = sender === "User" || sender === "user";
-      const prefix = isUser ? "user" : "coa";
+      const prefix = isUser ? "User Message" : "COA Response";
 
       const session = await this.getOrCreateActiveSession(cleanNumber);
 
@@ -118,7 +121,7 @@ class ConversationService {
       }
 
       const nextIndex = isUser ? session.userCount : session.coaCount;
-      const keyName = `${prefix}_${nextIndex}`;
+      const keyName = `${prefix} ${nextIndex}`;
       session.chat[keyName] = messageText;
       session.lastActivity = Date.now();
 

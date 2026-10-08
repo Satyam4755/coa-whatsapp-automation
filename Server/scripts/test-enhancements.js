@@ -416,30 +416,30 @@ async function runTests() {
     const res = await conversationService.logUserMessage({ userNumber, message: userMsg, messageId: "msg_test_01" });
 
     assert.ok(res, "Must return result object");
-    assert.strictEqual(res.key, "user_1");
+    assert.strictEqual(res.key, "User Message 1");
     assert.strictEqual(res.message, userMsg);
-    assert.strictEqual(res.chat["user_1"], userMsg);
+    assert.strictEqual(res.chat["User Message 1"], userMsg);
     assert.ok(!Array.isArray(res.chat), "Chat must NOT be an array");
     assert.strictEqual(typeof res.chat, "object", "Chat must be an object");
   });
 
-  // 26. Multiple Messages Append with Sequential Keys (user_1, coa_1, user_2, coa_2)
-  await asyncTest("26. MongoDB - Multiple messages append with sequential keys (user_1, coa_1, user_2, coa_2)", async () => {
+  // 26. Multiple Messages Append with Sequential Keys (User Message 1, COA Response 1, User Message 2, COA Response 2)
+  await asyncTest("26. MongoDB - Multiple messages append with sequential keys (User Message 1, COA Response 1, User Message 2, COA Response 2)", async () => {
     const userNumber = "919999988882";
     const r1 = await conversationService.logUserMessage({ userNumber, message: "Hi", messageId: "msg_u1" });
     const r2 = await conversationService.logCoaMessage({ userNumber, message: "Welcome to COA", messageId: "msg_c1" });
     const r3 = await conversationService.logUserMessage({ userNumber, message: "CA/2021/12345", messageId: "msg_u2" });
     const r4 = await conversationService.logCoaMessage({ userNumber, message: "Status details", messageId: "msg_c2" });
 
-    assert.strictEqual(r1.key, "user_1");
-    assert.strictEqual(r2.key, "coa_1");
-    assert.strictEqual(r3.key, "user_2");
-    assert.strictEqual(r4.key, "coa_2");
+    assert.strictEqual(r1.key, "User Message 1");
+    assert.strictEqual(r2.key, "COA Response 1");
+    assert.strictEqual(r3.key, "User Message 2");
+    assert.strictEqual(r4.key, "COA Response 2");
 
-    assert.strictEqual(r4.chat["user_1"], "Hi");
-    assert.strictEqual(r4.chat["coa_1"], "Welcome to COA");
-    assert.strictEqual(r4.chat["user_2"], "CA/2021/12345");
-    assert.strictEqual(r4.chat["coa_2"], "Status details");
+    assert.strictEqual(r4.chat["User Message 1"], "Hi");
+    assert.strictEqual(r4.chat["COA Response 1"], "Welcome to COA");
+    assert.strictEqual(r4.chat["User Message 2"], "CA/2021/12345");
+    assert.strictEqual(r4.chat["COA Response 2"], "Status details");
   });
 
   // 27. No Nested Array or Metadata Objects Inside Chat Entries
@@ -447,22 +447,22 @@ async function runTests() {
     const userNumber = "919999988883";
     const res = await conversationService.logUserMessage({ userNumber, message: "Direct string test", messageId: "u_msg_str" });
 
-    assert.strictEqual(typeof res.chat["user_1"], "string");
-    assert.strictEqual(res.chat["user_1"], "Direct string test");
-    assert.strictEqual(res.chat["user_1"].sender, undefined);
-    assert.strictEqual(res.chat["user_1"].timestamp, undefined);
+    assert.strictEqual(typeof res.chat["User Message 1"], "string");
+    assert.strictEqual(res.chat["User Message 1"], "Direct string test");
+    assert.strictEqual(res.chat["User Message 1"].sender, undefined);
+    assert.strictEqual(res.chat["User Message 1"].timestamp, undefined);
   });
 
   // 28. Chronological Conversation Order Maintained via Key Suffixes
-  await asyncTest("28. MongoDB - Chronological order maintained with coa_1, coa_2, coa_3", async () => {
+  await asyncTest("28. MongoDB - Chronological order maintained with COA Response 1, COA Response 2, COA Response 3", async () => {
     const userNumber = "919999988884";
     await conversationService.logCoaMessage({ userNumber, message: "Message 1", messageId: "coa_seq_1" });
     await conversationService.logCoaMessage({ userNumber, message: "Message 2", messageId: "coa_seq_2" });
     const r3 = await conversationService.logCoaMessage({ userNumber, message: "Message 3", messageId: "coa_seq_3" });
 
-    assert.strictEqual(r3.chat["coa_1"], "Message 1");
-    assert.strictEqual(r3.chat["coa_2"], "Message 2");
-    assert.strictEqual(r3.chat["coa_3"], "Message 3");
+    assert.strictEqual(r3.chat["COA Response 1"], "Message 1");
+    assert.strictEqual(r3.chat["COA Response 2"], "Message 2");
+    assert.strictEqual(r3.chat["COA Response 3"], "Message 3");
   });
 
   // 29. Deduplication by WhatsApp messageId avoids duplicate key increments
@@ -472,22 +472,22 @@ async function runTests() {
     const r1 = await conversationService.logUserMessage({ userNumber, message: "Hello", messageId: duplicateId });
     const r2 = await conversationService.logUserMessage({ userNumber, message: "Hello", messageId: duplicateId });
 
-    assert.strictEqual(r1.key, "user_1");
+    assert.strictEqual(r1.key, "User Message 1");
     assert.strictEqual(r2.deduplicated, true);
     assert.strictEqual(r2.key, null);
-    assert.strictEqual(r1.chat["user_2"], undefined);
+    assert.strictEqual(r1.chat["User Message 2"], undefined);
   });
 
   // 30. Multiple Consecutive COA Responses
-  await asyncTest("30. MongoDB - Multiple consecutive COA responses create coa_1, coa_2, coa_3", async () => {
+  await asyncTest("30. MongoDB - Multiple consecutive COA responses create COA Response 1, COA Response 2, COA Response 3", async () => {
     const userNumber = "919999988886";
     const r1 = await conversationService.logCoaMessage({ userNumber, message: "Part 1", messageId: "c_m1" });
     const r2 = await conversationService.logCoaMessage({ userNumber, message: "Part 2", messageId: "c_m2" });
 
-    assert.strictEqual(r1.key, "coa_1");
-    assert.strictEqual(r2.key, "coa_2");
-    assert.strictEqual(r2.chat["coa_1"], "Part 1");
-    assert.strictEqual(r2.chat["coa_2"], "Part 2");
+    assert.strictEqual(r1.key, "COA Response 1");
+    assert.strictEqual(r2.key, "COA Response 2");
+    assert.strictEqual(r2.chat["COA Response 1"], "Part 1");
+    assert.strictEqual(r2.chat["COA Response 2"], "Part 2");
   });
 
   // 31. Safe Non-Blocking Logging on MongoDB Failure
