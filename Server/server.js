@@ -14,6 +14,9 @@ import { Server } from "socket.io";
 import coaApiService from "./services/coaApiService.js";
 import queryRouterService from "./services/queryRouterService.js";
 import architectRouter from "./routes/architect.routes.js";
+import { redisConnection } from "./services/bulkJobQueue.js";
+import conversationService from "./services/conversationService.js";
+import rateLimiterService from "./services/rateLimiterService.js";
 
 const app = express();
 
@@ -126,12 +129,26 @@ const sendMessage = async (recipient, message, buttons = []) => {
   };
 
   try {
-    await axios.post(url, payload, { headers });
+    const res = await axios.post(url, payload, { headers });
+    const outMsgId = res?.data?.messages?.[0]?.id || null;
+    conversationService
+      .logCoaMessage({
+        userNumber: recipient,
+        message: message || "Welcome to the Council of Architecture. Please select an option to continue.",
+        messageId: outMsgId,
+      })
+      .catch((err) => console.error("Error logging COA welcome message:", err.message));
   } catch (error) {
     console.error(
       "Error sending message:",
       error.response ? error.response.data : error.message
     );
+    conversationService
+      .logCoaMessage({
+        userNumber: recipient,
+        message: message || "Welcome to the Council of Architecture. Please select an option to continue.",
+      })
+      .catch(() => {});
   }
 };
 
@@ -150,65 +167,90 @@ const sendTextMessage = async (recipient, message) => {
   };
 
   try {
-    await axios.post(url, payload, { headers });
+    const res = await axios.post(url, payload, { headers });
     console.log(`Message sent to ${recipient}: ${message}`);
+    const outMsgId = res?.data?.messages?.[0]?.id || null;
+    conversationService
+      .logCoaMessage({
+        userNumber: recipient,
+        message: message,
+        messageId: outMsgId,
+      })
+      .catch((err) => console.error("Error logging COA text message:", err.message));
   } catch (error) {
     console.error(
       "Error sending text message:",
       error.response ? error.response.data : error.message
     );
+    conversationService
+      .logCoaMessage({
+        userNumber: recipient,
+        message: message,
+      })
+      .catch(() => {});
   }
 };
 
-const sendCronTextMessage = async (recipient, message,validityDate,calendarYear,wef) => {
+const sendCronTextMessage = async (recipient, message, validityDate, calendarYear, wef) => {
   const url = `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`;
 
-
-
- const payload = {
-  messaging_product: "whatsapp",
-  to: recipient,
-  type: "template",
-  template: {
-    name: "cron_payment_template",
-    language: {
-      code: "en",
-    },
-    components: [
-      {
-        type: "body",
-        parameters: [
-          {
-            type: "text",
-            text: validityDate,
-          },
-          {
-            type: "text",
-            text: calendarYear,
-          },
-          {
-            type: "text",
-            text: wef,
-          },
-        ],
+  const payload = {
+    messaging_product: "whatsapp",
+    to: recipient,
+    type: "template",
+    template: {
+      name: "cron_payment_template",
+      language: {
+        code: "en",
       },
-    ],
-  },
-};
-
+      components: [
+        {
+          type: "body",
+          parameters: [
+            {
+              type: "text",
+              text: validityDate,
+            },
+            {
+              type: "text",
+              text: calendarYear,
+            },
+            {
+              type: "text",
+              text: wef,
+            },
+          ],
+        },
+      ],
+    },
+  };
 
   const headers = {
     Authorization: `Bearer ${WA_ACCESS_TOKEN}`,
   };
 
   try {
-    await axios.post(url, payload, { headers });
+    const res = await axios.post(url, payload, { headers });
     console.log(`Message sent to ${recipient}: ${message}`);
+    const outMsgId = res?.data?.messages?.[0]?.id || null;
+    conversationService
+      .logCoaMessage({
+        userNumber: recipient,
+        message: message,
+        messageId: outMsgId,
+      })
+      .catch((err) => console.error("Error logging COA cron message:", err.message));
   } catch (error) {
     console.error(
       "Error sending text message:",
       error.response ? error.response.data : error.message
     );
+    conversationService
+      .logCoaMessage({
+        userNumber: recipient,
+        message: message,
+      })
+      .catch(() => {});
   }
 };
 
@@ -353,6 +395,39 @@ const cronAPIURL = process.env.NODE_ENV === "production" ? `https://coa.gov.in/A
 
 const processedMessageIds = new Map();
 
+async function isMessageDuplicate(messageId) {
+  if (!messageId) return false;
+
+  // 1. In-memory check (microsecond fast local check)
+  if (processedMessageIds.has(messageId)) {
+    return true;
+  }
+  processedMessageIds.set(messageId, Date.now());
+
+  // Prune local in-memory map
+  if (processedMessageIds.size > 5000) {
+    const cutoff = Date.now() - 60 * 60 * 1000;
+    for (const [id, time] of processedMessageIds.entries()) {
+      if (time < cutoff) processedMessageIds.delete(id);
+    }
+  }
+
+  // 2. Persistent Redis atomic check (distributed across workers / survives restarts)
+  try {
+    if (redisConnection && redisConnection.status === "ready") {
+      const key = `wa:msg:idempotency:${messageId}`;
+      const result = await redisConnection.set(key, Date.now().toString(), "EX", 86400, "NX");
+      if (result === null) {
+        return true;
+      }
+    }
+  } catch (err) {
+    console.warn("Redis idempotency check warning:", err.message);
+  }
+
+  return false;
+}
+
 app.post("/webhook", async (req, res) => {
   try {
     if (req.body?.object !== "whatsapp_business_account") {
@@ -368,20 +443,12 @@ app.post("/webhook", async (req, res) => {
       const message = change.value.messages[0];
       const messageId = message?.id;
 
-      // Webhook message deduplication to ensure idempotency
+      // Webhook message deduplication to ensure strict idempotency
       if (messageId) {
-        if (processedMessageIds.has(messageId)) {
+        const isDuplicate = await isMessageDuplicate(messageId);
+        if (isDuplicate) {
           console.log(`Duplicate webhook message ${messageId} ignored.`);
           return res.sendStatus(200);
-        }
-        processedMessageIds.set(messageId, Date.now());
-
-        // Clean up cache entries older than 15 minutes
-        if (processedMessageIds.size > 2000) {
-          const cutoff = Date.now() - 15 * 60 * 1000;
-          for (const [id, time] of processedMessageIds.entries()) {
-            if (time < cutoff) processedMessageIds.delete(id);
-          }
         }
       }
 
@@ -390,24 +457,66 @@ app.post("/webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
+      // Rate limit check using atomic Redis sliding window
+      const rateLimit = await rateLimiterService.checkRateLimit(userNumber);
+      if (!rateLimit.allowed) {
+        const maskedNum = userNumber.length > 4 ? `...${userNumber.slice(-4)}` : userNumber;
+        console.warn(`[RateLimit] User ${maskedNum} exceeded rate limit. Request blocked.`);
+        if (rateLimiterService.shouldSendWarning(userNumber)) {
+          await sendTextMessage(
+            userNumber,
+            "⚠️ You are sending messages too quickly. Please wait a moment before trying again."
+          );
+        }
+        return res.sendStatus(200);
+      }
+
       if (!userStates[userNumber]) {
         userStates[userNumber] = {};
       }
+      userStates[userNumber].lastMessageId = messageId || `msg_${Date.now()}`;
+
+      // Extract incoming message text for persistence
+      let incomingText = "";
+      if (message?.button) {
+        incomingText = message.button.text;
+      } else if (message?.interactive?.button_reply) {
+        incomingText = message.interactive.button_reply.title || message.interactive.button_reply.id || "";
+      } else if (message?.interactive?.list_reply) {
+        incomingText = message.interactive.list_reply.title || message.interactive.list_reply.id || "";
+      } else if (message?.text?.body) {
+        incomingText = message.text.body;
+      } else if (message?.type) {
+        incomingText = `[${message.type}]`;
+      }
+
+      // Persist USER message to MongoDB real-time in leads collection
+      if (incomingText) {
+        conversationService
+          .logUserMessage({
+            userNumber,
+            message: incomingText,
+            messageId,
+          })
+          .catch((err) => console.error("Error logging user message:", err.message));
+      }
 
       if (message?.button) {
-        await handleButtonClick(userNumber, message.button.text);
+        await handleButtonClick(userNumber, message.button.text, messageId);
       } else if (message?.interactive?.button_reply) {
         await handleButtonClick(
           userNumber,
-          message.interactive.button_reply.title || message.interactive.button_reply.id
+          message.interactive.button_reply.title || message.interactive.button_reply.id,
+          messageId
         );
       } else if (message?.interactive?.list_reply) {
         await handleButtonClick(
           userNumber,
-          message.interactive.list_reply.title || message.interactive.list_reply.id
+          message.interactive.list_reply.title || message.interactive.list_reply.id,
+          messageId
         );
       } else if (message?.text?.body) {
-        await handleTextMessage(userNumber, message.text.body);
+        await handleTextMessage(userNumber, message.text.body, messageId);
       }
     } else if (change?.value?.statuses) {
       console.log("Status Update:", change.value.statuses[0]);
@@ -420,15 +529,15 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-async function handleButtonClick(userNumber, buttonTitle) {
+async function handleButtonClick(userNumber, buttonTitle, messageId = null) {
   console.log(`Button clicked by ${userNumber}: ${buttonTitle}`);
   const title = (buttonTitle || "").trim();
+  if (messageId) {
+    if (!userStates[userNumber]) userStates[userNumber] = {};
+    userStates[userNumber].lastMessageId = messageId;
+  }
 
   const responses = {
-    "Architect Status": {
-      message: "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search.",
-      state: "search_architect",
-    },
     "Search Architect": {
       message: "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search.",
       state: "search_architect",
@@ -449,7 +558,7 @@ async function handleButtonClick(userNumber, buttonTitle) {
 
   if (responses[title]) {
     sendTextMessage(userNumber, responses[title].message);
-    userStates[userNumber] = { awaiting: responses[title].state, attempts: 0 };
+    userStates[userNumber] = { awaiting: responses[title].state, attempts: 0, lastMessageId: messageId };
     return;
   }
 
@@ -457,8 +566,9 @@ async function handleButtonClick(userNumber, buttonTitle) {
   const classification = queryRouterService.classifyQuery(title);
   if (classification.type === "DEPARTMENT_QUERY" || classification.type === "FAQ") {
     sendTextMessage(userNumber, classification.response);
+    userStates[userNumber] = { lastMessageId: messageId };
   } else {
-    userStates[userNumber] = { attempts: 0 };
+    userStates[userNumber] = { attempts: 0, lastMessageId: messageId };
     sendWelcomeMessage(userNumber);
   }
 }
@@ -473,7 +583,7 @@ function sendWelcomeMessage(userNumber) {
   sendMessage(userNumber, welcomeMessage, buttons);
 }
 
-async function handleArchitectSearchFlow(userNumber, searchQuery) {
+async function handleArchitectSearchFlow(userNumber, searchQuery, messageId = null) {
   try {
     const term = (searchQuery || "").trim();
     if (!term) {
@@ -481,36 +591,42 @@ async function handleArchitectSearchFlow(userNumber, searchQuery) {
         userNumber,
         "🏛️ *Search Architect / Verify Architect*\n\nPlease enter an Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search."
       );
-      userStates[userNumber] = { awaiting: "search_architect", attempts: 0 };
+      userStates[userNumber] = { awaiting: "search_architect", attempts: 0, lastMessageId: messageId };
       return;
     }
 
     const searchResult = await coaApiService.searchArchitect({ query: term });
+
+    // Validate that the conversation has not moved on while this search was executing
+    if (
+      messageId &&
+      userStates[userNumber]?.lastMessageId &&
+      userStates[userNumber].lastMessageId !== messageId
+    ) {
+      console.log(
+        `Discarding stale architect search response for ${userNumber} (msgId ${messageId} superseded by ${userStates[userNumber].lastMessageId})`
+      );
+      return;
+    }
 
     if (!searchResult.found || !searchResult.architects || searchResult.architects.length === 0) {
       sendTextMessage(
         userNumber,
         `🏛️ *Council of Architecture — Search Result*\n\nNo architect record found matching "${term}".\n\nPlease check the Registration Number (format: CA/YYYY/XXXXX) or Name and try again.\n\n_Type "menu" to return to the main menu._`
       );
-      userStates[userNumber] = {};
+      userStates[userNumber] = { lastMessageId: messageId };
       return;
     }
 
     if (searchResult.architects.length === 1) {
       const arch = searchResult.architects[0];
-      const displayName = arch.name ? `Ar. ${arch.name}` : "Not Available";
-      let msg = `🏛️ *Council of Architecture — Architect Details*\n\n`;
-      msg += `• *Registration No:* ${arch.regNumber || "Not Available"}\n`;
-      msg += `• *Architect Name:* ${displayName}\n`;
-      msg += `• *Registration Status:* ${arch.status || "Active"}\n`;
-      msg += `• *Validity:* ${arch.validity || "Not Available"}\n`;
-      if (arch.maskedEmail) msg += `• *Email:* ${arch.maskedEmail}\n`;
-      if (arch.maskedMobile) msg += `• *Mobile:* ${arch.maskedMobile}\n`;
-      if (arch.address) msg += `• *Address:* ${arch.address}\n`;
-      msg += `\n_Type "menu" to return to the main menu._`;
+      let msg = `Registration number: ${arch.regNumber || "Not Available"}\n`;
+      msg += `Architect name: ${arch.name || "Not Available"}\n`;
+      msg += `Registration Status: ${arch.status || "Active"}\n`;
+      msg += `${arch.validityDisplay || (arch.validity ? `Annual payment valid till ${arch.validity}` : "Endorsement due.")}`;
 
       sendTextMessage(userNumber, msg);
-      userStates[userNumber] = {};
+      userStates[userNumber] = { lastMessageId: messageId };
       return;
     }
 
@@ -524,22 +640,22 @@ async function handleArchitectSearchFlow(userNumber, searchQuery) {
     msg += `\n_Type "menu" to return to the main menu._`;
 
     sendTextMessage(userNumber, msg);
-    userStates[userNumber] = { awaiting: "search_architect" };
+    userStates[userNumber] = { awaiting: "search_architect", lastMessageId: messageId };
   } catch (err) {
     console.error("Error in handleArchitectSearchFlow:", err);
     sendTextMessage(
       userNumber,
       "An unexpected error occurred while searching for architect records. Please try again later.\n\n_Type \"menu\" to return to the main menu._"
     );
-    userStates[userNumber] = {};
+    userStates[userNumber] = { lastMessageId: messageId };
   }
 }
 
-async function handleArchitectStatus(userNumber, registrationNumber) {
-  return handleArchitectSearchFlow(userNumber, registrationNumber);
+async function handleArchitectStatus(userNumber, registrationNumber, messageId = null) {
+  return handleArchitectSearchFlow(userNumber, registrationNumber, messageId);
 }
 
-async function handleTextMessage(userNumber, rawUserMessage) {
+async function handleTextMessage(userNumber, rawUserMessage, messageId = null) {
   const userMessage = (rawUserMessage || "").trim();
   const lower = userMessage.toLowerCase();
   const userState = userStates[userNumber] || {};
@@ -553,15 +669,15 @@ async function handleTextMessage(userNumber, rawUserMessage) {
     (/^(?:hi+|hello+|hey+|namaste)\b/i.test(lower) && lower.length <= 15);
 
   if (isGreetingOrMenu) {
-    userStates[userNumber] = { attempts: 0 };
+    userStates[userNumber] = { attempts: 0, lastMessageId: messageId };
     return sendWelcomeMessage(userNumber);
   }
 
   // 2. Direct Registration Number Recognition (always prioritized)
   const regNoMatch = userMessage.match(/\b(CA\/\d{2,4}\/\d{3,7})\b/i);
   if (regNoMatch) {
-    userStates[userNumber] = {};
-    return handleArchitectSearchFlow(userNumber, regNoMatch[1].toUpperCase());
+    userStates[userNumber] = { lastMessageId: messageId };
+    return handleArchitectSearchFlow(userNumber, regNoMatch[1].toUpperCase(), messageId);
   }
 
   // 3. Active Awaiting States
@@ -573,13 +689,13 @@ async function handleTextMessage(userNumber, rawUserMessage) {
       earlyClassification.type === "DEPARTMENT_QUERY" ||
       earlyClassification.type === "PROMPT_SEARCH_ARCHITECT"
     ) {
-      userStates[userNumber] = {};
+      userStates[userNumber] = { lastMessageId: messageId };
       if (earlyClassification.type === "PROMPT_SEARCH_ARCHITECT") {
         sendTextMessage(
           userNumber,
           "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search."
         );
-        userStates[userNumber] = { awaiting: "search_architect", attempts: 0 };
+        userStates[userNumber] = { awaiting: "search_architect", attempts: 0, lastMessageId: messageId };
         return;
       }
       sendTextMessage(userNumber, earlyClassification.response);
@@ -589,7 +705,7 @@ async function handleTextMessage(userNumber, rawUserMessage) {
     switch (awaiting) {
       case "search_architect":
       case "architect_status":
-        await handleArchitectSearchFlow(userNumber, userMessage);
+        await handleArchitectSearchFlow(userNumber, userMessage, messageId);
         return;
       case "dispatch_status":
         await handleDispatchStatus(userNumber, userMessage);
@@ -598,7 +714,7 @@ async function handleTextMessage(userNumber, rawUserMessage) {
         await handleApplicationStatus(userNumber, userMessage);
         return;
       default:
-        userStates[userNumber] = { attempts: 0 };
+        userStates[userNumber] = { attempts: 0, lastMessageId: messageId };
         return sendWelcomeMessage(userNumber);
     }
   }
@@ -608,7 +724,7 @@ async function handleTextMessage(userNumber, rawUserMessage) {
 
   switch (classification.type) {
     case "SEARCH_ARCHITECT":
-      await handleArchitectSearchFlow(userNumber, classification.query);
+      await handleArchitectSearchFlow(userNumber, classification.query, messageId);
       break;
 
     case "PROMPT_SEARCH_ARCHITECT":
@@ -616,21 +732,21 @@ async function handleTextMessage(userNumber, rawUserMessage) {
         userNumber,
         "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search."
       );
-      userStates[userNumber] = { awaiting: "search_architect", attempts: 0 };
+      userStates[userNumber] = { awaiting: "search_architect", attempts: 0, lastMessageId: messageId };
       break;
 
     case "FAQ":
       sendTextMessage(userNumber, classification.response);
-      userStates[userNumber] = {};
+      userStates[userNumber] = { lastMessageId: messageId };
       break;
 
     case "DEPARTMENT_QUERY":
       sendTextMessage(userNumber, classification.response);
-      userStates[userNumber] = {};
+      userStates[userNumber] = { lastMessageId: messageId };
       break;
 
     case "MENU":
-      userStates[userNumber] = { attempts: 0 };
+      userStates[userNumber] = { attempts: 0, lastMessageId: messageId };
       sendWelcomeMessage(userNumber);
       break;
 
@@ -652,7 +768,7 @@ async function handleTextMessage(userNumber, rawUserMessage) {
           `• 🎫 *Samarthaya Ticket:* Type "Ticket"\n\n` +
           `_Type "menu" to view main options or ask your question directly._`;
         sendTextMessage(userNumber, guideMsg);
-        userStates[userNumber] = {};
+        userStates[userNumber] = { lastMessageId: messageId };
       }
       break;
   }

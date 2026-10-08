@@ -9,12 +9,12 @@ class CoaApiService {
   constructor() {
     this.apiBaseUrl = (
       process.env.API_BASE_URL ||
-      "https://coa.brandforce360.com/api/external/whatsapp"
+      "https://coa.org.in/api/external/whatsapp"
     ).replace(/\/+$/, "");
 
     this.username = process.env.WHATSAPP_BASIC_AUTH_USERNAME || "coa-erp-portal";
     this.password = process.env.WHATSAPP_BASIC_AUTH_PASSWORD || "";
-    this.timeout = 10000; // 10 seconds
+    this.timeout = 3000; // 3 seconds timeout for fast responsive handling
   }
 
   getAuthHeader() {
@@ -41,12 +41,12 @@ class CoaApiService {
       headers,
       timeout: this.timeout,
       httpsAgent,
-      validateStatus: (status) => status < 500, // Handle non-500 status gracefully
+      validateStatus: (status) => status < 500,
     });
   }
 
-  formatDate(dateStr) {
-    if (!dateStr) return "Not Available";
+  formatDate(dateStr, twoDigitYear = false) {
+    if (!dateStr) return "";
     const months = {
       January: "01",
       February: "02",
@@ -63,38 +63,62 @@ class CoaApiService {
     };
 
     try {
-      if (dateStr.includes("/")) {
-        const [day, month, year] = dateStr.split("/");
-        const formattedMonth = months[month] || month;
-        return `${day.padStart(2, "0")}/${formattedMonth}/${year}`;
+      let day = "", month = "", year = "";
+      const str = dateStr.toString().trim();
+      const dateMatch = str.match(/(\d{1,2})[\/\-]([a-zA-Z0-9]+)[\/\-](\d{2,4})/);
+      if (dateMatch) {
+        day = dateMatch[1];
+        month = months[dateMatch[2]] || dateMatch[2];
+        year = dateMatch[3];
+      } else if (str.includes("/")) {
+        [day, month, year] = str.split("/");
+        month = months[month] || month;
+      } else if (str.includes("-")) {
+        [year, month, day] = str.split("-");
       }
-      return dateStr;
+
+      if (!day || !month || !year) return str;
+      const formattedYear = twoDigitYear && year.length === 4 ? year.slice(-2) : year;
+      return `${day.padStart(2, "0")}/${month.padStart(2, "0")}/${formattedYear}`;
     } catch {
       return dateStr;
     }
   }
 
-  maskPhone(phone) {
-    if (!phone) return "";
-    const str = phone.toString().trim();
-    if (str.length < 4) return str;
-    return `******${str.slice(-4)}`;
-  }
+  getValidityDisplay(raw) {
+    const rawStatus = (raw.archStatus || raw.status || "").toString();
+    const rawValidity = (
+      raw.archValidityUpTo ||
+      raw.validity ||
+      raw.valid_upto ||
+      raw.validUntil ||
+      ""
+    ).toString();
 
-  maskEmail(email) {
-    if (!email || typeof email !== "string" || !email.includes("@")) return "";
-    const [user, domain] = email.split("@");
-    if (user.length <= 2) return `${user[0]}*@${domain}`;
-    return `${user[0]}${"*".repeat(Math.min(user.length - 2, 5))}${user.slice(-1)}@${domain}`;
-  }
-
-  formatValidity(dateStr) {
-    if (!dateStr) return "Not Available";
-    const str = dateStr.toString().trim();
-    if (/one\s*time\s*payment|\botp\b|lifetime/i.test(str)) {
-      return "Valid Through: (One Time Payment)";
+    // 1. Endorsement due
+    if (/endorsement\s*due/i.test(rawStatus) || /endorsement\s*due/i.test(rawValidity)) {
+      return "Endorsement due.";
     }
-    return this.formatDate(str);
+
+    // 2. One time payment
+    if (
+      raw.isOneTimePayment ||
+      raw.payment_type === "otp" ||
+      raw.paymentType === "one_time" ||
+      /one\s*time\s*payment|\botp\b|lifetime/i.test(rawValidity) ||
+      /one\s*time\s*payment|\botp\b/i.test(rawStatus)
+    ) {
+      const d = this.formatDate(rawValidity, true);
+      return d ? `One time payment valid till ${d}` : "One time payment valid till DD/MM/YY";
+    }
+
+    // 3. Annual payment
+    if (rawValidity) {
+      const d = this.formatDate(rawValidity, false);
+      if (d) return `Annual payment valid till ${d}`;
+    }
+
+    return "Endorsement due.";
   }
 
   normalizeArchitect(raw) {
@@ -132,11 +156,14 @@ class CoaApiService {
     // Clean up extra whitespace
     name = (name || "").toString().replace(/\s+/g, " ").trim();
 
-    const status =
+    let rawStatus =
       raw.archStatus ||
       raw.status ||
       raw.registration_status ||
       "Active";
+
+    // Clean HTML tags from status (e.g. <span class="DataRed">Endorsement Due</span>)
+    const cleanStatus = rawStatus.toString().replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
 
     const rawValidity =
       raw.archValidityUpTo ||
@@ -146,45 +173,22 @@ class CoaApiService {
       raw.validityUpTo ||
       "";
 
-    const mobile = raw.Mobile || raw.mobile || raw.contact || "";
-    const email = raw.Email || raw.email || "";
-    const dob = raw.archdob || raw.dob || "";
-
-    // Assemble address from available address fields
-    let address =
-      raw.archAddress ||
-      raw.address ||
-      raw.CorresspondanceAddr ||
-      raw.PermanentAddr ||
-      "";
-
-    address = (address || "").toString().replace(/[\r\n]+/g, ", ").replace(/\s+/g, " ").trim();
-    if (raw.district && !address.toLowerCase().includes(raw.district.toLowerCase())) {
-      address += address ? `, ${raw.district}` : raw.district;
-    }
-    if (raw.pincode && !address.includes(raw.pincode)) {
-      address += address ? ` - ${raw.pincode}` : raw.pincode;
-    }
+    const validityDisplay = this.getValidityDisplay(raw);
 
     return {
       regNumber: regNumber.toString().trim().toUpperCase(),
       name: name.toString().trim(),
-      status: status.toString().trim(),
-      validity: rawValidity ? this.formatValidity(rawValidity) : "Not Available",
+      status: cleanStatus,
+      validity: rawValidity ? this.formatDate(rawValidity, false) : "Not Available",
+      validityDisplay: validityDisplay,
       rawValidity: rawValidity,
-      dob: dob ? this.formatDate(dob) : "",
-      mobile: mobile ? mobile.toString() : "",
-      maskedMobile: this.maskPhone(mobile),
-      email: email.toString(),
-      maskedEmail: this.maskEmail(email),
-      address: address,
+      address: [raw.CorresspondanceAddr, raw.district, raw.pincode].filter(Boolean).join(", "),
     };
   }
 
   /**
-   * Search architect by registration number or name
-   * Primary: Calls API_BASE_URL with Basic Auth
-   * Fallback: Live CoA API endpoints (ArchitectVerifyAPI / AllArchitectDataAPI)
+   * Search architect using ONLY the official CoA API (API_BASE_URL)
+   * No fallback endpoints or full-directory downloads.
    */
   async searchArchitect({ regNumber, name, query }) {
     const searchTerm = (regNumber || name || query || "").trim();
@@ -196,146 +200,53 @@ class CoaApiService {
       };
     }
 
-    const isRegNumber = /^CA\/\d{4}\/\d{4,7}$/i.test(searchTerm) || /^CA\/\d+/i.test(searchTerm);
+    const isRegNumber = /^CA\/\d{2,4}\/\d{3,7}$/i.test(searchTerm) || /^CA\/\d+/i.test(searchTerm);
     const client = this.getAxiosClient();
 
-    // 1. Try external API with Basic Auth
     try {
-      const endpointsToTry = isRegNumber
-        ? [
-            `/architects?reg_no=${encodeURIComponent(searchTerm)}`,
-            `/verify?reg_no=${encodeURIComponent(searchTerm)}`,
-            `/search?reg_no=${encodeURIComponent(searchTerm)}`,
-            `?reg_no=${encodeURIComponent(searchTerm)}`,
-          ]
-        : [
-            `/architects?name=${encodeURIComponent(searchTerm)}`,
-            `/search?name=${encodeURIComponent(searchTerm)}`,
-            `/search?query=${encodeURIComponent(searchTerm)}`,
-            `?name=${encodeURIComponent(searchTerm)}`,
-          ];
+      const params = isRegNumber
+        ? { reg_no: searchTerm.toUpperCase() }
+        : { name: searchTerm };
 
-      for (const endpoint of endpointsToTry) {
-        try {
-          const response = await client.get(endpoint);
-          if (response.status >= 200 && response.status < 300 && response.data) {
-            let data = response.data;
-            if (data.data) data = data.data;
+      const response = await client.get("", { params });
 
-            if (Array.isArray(data) && data.length > 0) {
-              const architects = data.map((item) => this.normalizeArchitect(item)).filter(Boolean);
-              if (architects.length > 0) {
-                return {
-                  found: true,
-                  count: architects.length,
-                  architects,
-                  source: "coa-external-api",
-                };
-              }
-            } else if (typeof data === "object" && !Array.isArray(data) && (data.archRegNum || data.reg_no || data.archName || data.name)) {
-              const architect = this.normalizeArchitect(data);
-              if (architect) {
-                return {
-                  found: true,
-                  count: 1,
-                  architects: [architect],
-                  source: "coa-external-api",
-                };
-              }
+      if (response && response.status >= 200 && response.status < 300 && response.data) {
+        let data = response.data.data || response.data;
+
+        if (Array.isArray(data) && data.length > 0) {
+          const architects = data.map((item) => this.normalizeArchitect(item)).filter(Boolean);
+          if (architects.length > 0) {
+            return {
+              found: true,
+              count: architects.length,
+              architects,
+              source: "coa-official-api",
+            };
+          }
+        } else if (typeof data === "object" && data !== null) {
+          if (data.archRegNum || data.reg_no || data.archName || data.name || data.archFirstName) {
+            const architect = this.normalizeArchitect(data);
+            if (architect) {
+              return {
+                found: true,
+                count: 1,
+                architects: [architect],
+                source: "coa-official-api",
+              };
             }
           }
-        } catch {
-          // Continue to next endpoint or fallback
         }
       }
-    } catch {
-      // Ignore upstream network error and move to verified CoA fallback
-    }
-
-    // 2. Fallback: Query CoA Official API Endpoints
-    try {
-      if (isRegNumber) {
-        const formattedReg = searchTerm.toUpperCase();
-        const verifyUrl =
-          process.env.NODE_ENV === "production"
-            ? `https://www.coa.gov.in/ArchitectVerifyAPI.php?reg_no=${encodeURIComponent(formattedReg)}`
-            : `https://www.coa.gov.in/staging/ArchitectVerifyAPI.php?reg_no=${encodeURIComponent(formattedReg)}`;
-
-        const verifyRes = await axios.get(verifyUrl, {
-          httpsAgent,
-          timeout: this.timeout,
-          validateStatus: (s) => s < 500,
-        });
-
-        if (verifyRes.data && typeof verifyRes.data === "object" && (verifyRes.data.archRegNum || verifyRes.data.archName || verifyRes.data.Mobile)) {
-          const architect = this.normalizeArchitect({
-            ...verifyRes.data,
-            archRegNum: verifyRes.data.archRegNum || formattedReg,
-          });
-          return {
-            found: true,
-            count: 1,
-            architects: [architect],
-            source: "coa-verify-api",
-          };
-        }
-      }
-
-      // Name search or all-architect fallback
-      const allUrl =
-        process.env.NODE_ENV === "production"
-          ? `https://coa.gov.in/AllArchitectDataAPI.php`
-          : `https://coa.gov.in/staging/AllArchitectDataAPI.php`;
-
-      const allRes = await axios.get(allUrl, {
-        httpsAgent,
-        timeout: 15000,
-        validateStatus: (s) => s < 500,
-      });
-
-      if (allRes.data && typeof allRes.data === "string") {
-        const rawData = allRes.data;
-        const architects = rawData
-          .split("}{")
-          .map((item, index, arr) => {
-            try {
-              if (index === 0) return JSON.parse(item + "}");
-              if (index === arr.length - 1) return JSON.parse("{" + item);
-              return JSON.parse("{" + item + "}");
-            } catch {
-              return null;
-            }
-          })
-          .filter(Boolean);
-
-        const lowerQuery = searchTerm.toLowerCase();
-        const matches = architects
-          .filter((item) => {
-            const archReg = (item.archRegNum || "").toLowerCase();
-            const archName = (item.archName || "").toLowerCase();
-            return archReg.includes(lowerQuery) || archName.includes(lowerQuery);
-          })
-          .slice(0, 5) // Return top 5 matches
-          .map((item) => this.normalizeArchitect(item))
-          .filter(Boolean);
-
-        if (matches.length > 0) {
-          return {
-            found: true,
-            count: matches.length,
-            architects: matches,
-            source: "coa-directory-api",
-          };
-        }
-      }
-    } catch (err) {
-      console.error("Architect search fallback error:", err.message);
+    } catch (error) {
+      console.error("CoA Official API request error:", error.message);
     }
 
     return {
       found: false,
       architects: [],
-      message: `No architect found matching "${searchTerm}".`,
+      message: isRegNumber
+        ? `No architect record found for Registration No. ${searchTerm.toUpperCase()}.`
+        : `No architect found matching "${searchTerm}".`,
     };
   }
 }

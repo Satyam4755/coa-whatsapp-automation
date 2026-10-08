@@ -37,6 +37,30 @@ async function runE2ETests() {
   const { default: queryRouterService } = await import("../services/queryRouterService.js");
   const { default: faqService } = await import("../services/faqService.js");
 
+  // Provide deterministic architect search response for E2E flow test
+  const originalSearchArchitect = coaApiService.searchArchitect.bind(coaApiService);
+  coaApiService.searchArchitect = async function (options) {
+    const q = (options?.regNumber || options?.name || options?.query || "").trim();
+    if (q.toUpperCase() === "CA/1975/00048") {
+      return {
+        found: true,
+        count: 1,
+        architects: [
+          {
+            regNumber: "CA/1975/00048",
+            name: "PRAKASH NARAYAN",
+            status: "Defaulter",
+            validity: "31/12/1976",
+            validityDisplay: "Annual payment valid till 31/12/1976",
+            address: "ASSOCIATE PLANNER HOUSING 8th Flr. VIKAS MINAR Bldg I.P.ESTATE, New Delhi, 110002",
+          },
+        ],
+        source: "coa-official-api",
+      };
+    }
+    return originalSearchArchitect(options);
+  };
+
   // Create an exact replica of the server state and webhook handler to test end-to-end
   const userStates = {};
   const processedMessageIds = new Map();
@@ -66,20 +90,21 @@ async function runE2ETests() {
   function sendWelcomeMessage(userNumber) {
     const welcomeMessage = `Welcome to the Council of Architecture. We are available 24/7 to answer your queries. You can enquire, provide feedback, and ask for support. Please select an option to continue.`;
     const buttons = [
-      { type: "text", text: "Architect Status" },
+      { type: "text", text: "Search Architect" },
       { type: "text", text: "Application Status" },
       { type: "text", text: "Dispatch Status" },
     ];
     sendMessage(userNumber, welcomeMessage, buttons);
   }
 
-  async function handleButtonClick(userNumber, buttonTitle) {
+  async function handleButtonClick(userNumber, buttonTitle, messageId = null) {
     const title = (buttonTitle || "").trim();
+    if (messageId) {
+      if (!userStates[userNumber]) userStates[userNumber] = {};
+      userStates[userNumber].lastMessageId = messageId;
+    }
+
     const responses = {
-      "Architect Status": {
-        message: "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search.",
-        state: "search_architect",
-      },
       "Search Architect": {
         message: "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search.",
         state: "search_architect",
@@ -100,20 +125,21 @@ async function runE2ETests() {
 
     if (responses[title]) {
       sendTextMessage(userNumber, responses[title].message);
-      userStates[userNumber] = { awaiting: responses[title].state, attempts: 0 };
+      userStates[userNumber] = { awaiting: responses[title].state, attempts: 0, lastMessageId: messageId };
       return;
     }
 
     const classification = queryRouterService.classifyQuery(title);
     if (classification.type === "DEPARTMENT_QUERY" || classification.type === "FAQ") {
       sendTextMessage(userNumber, classification.response);
+      userStates[userNumber] = { lastMessageId: messageId };
     } else {
-      userStates[userNumber] = { attempts: 0 };
+      userStates[userNumber] = { attempts: 0, lastMessageId: messageId };
       sendWelcomeMessage(userNumber);
     }
   }
 
-  async function handleArchitectSearchFlow(userNumber, searchQuery) {
+  async function handleArchitectSearchFlow(userNumber, searchQuery, messageId = null) {
     try {
       const term = (searchQuery || "").trim();
       if (!term) {
@@ -121,36 +147,39 @@ async function runE2ETests() {
           userNumber,
           "🏛️ *Search Architect / Verify Architect*\n\nPlease enter an Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search."
         );
-        userStates[userNumber] = { awaiting: "search_architect", attempts: 0 };
+        userStates[userNumber] = { awaiting: "search_architect", attempts: 0, lastMessageId: messageId };
         return;
       }
 
       const searchResult = await coaApiService.searchArchitect({ query: term });
+
+      // Stale in-flight check
+      if (
+        messageId &&
+        userStates[userNumber]?.lastMessageId &&
+        userStates[userNumber].lastMessageId !== messageId
+      ) {
+        return; // Discard stale result
+      }
 
       if (!searchResult.found || !searchResult.architects || searchResult.architects.length === 0) {
         sendTextMessage(
           userNumber,
           `🏛️ *Council of Architecture — Search Result*\n\nNo architect record found matching "${term}".\n\nPlease check the Registration Number (format: CA/YYYY/XXXXX) or Name and try again.\n\n_Type "menu" to return to the main menu._`
         );
-        userStates[userNumber] = {};
+        userStates[userNumber] = { lastMessageId: messageId };
         return;
       }
 
       if (searchResult.architects.length === 1) {
         const arch = searchResult.architects[0];
-        const displayName = arch.name ? `Ar. ${arch.name}` : "Not Available";
-        let msg = `🏛️ *Council of Architecture — Architect Details*\n\n`;
-        msg += `• *Registration No:* ${arch.regNumber || "Not Available"}\n`;
-        msg += `• *Architect Name:* ${displayName}\n`;
-        msg += `• *Registration Status:* ${arch.status || "Active"}\n`;
-        msg += `• *Validity:* ${arch.validity || "Not Available"}\n`;
-        if (arch.maskedEmail) msg += `• *Email:* ${arch.maskedEmail}\n`;
-        if (arch.maskedMobile) msg += `• *Mobile:* ${arch.maskedMobile}\n`;
-        if (arch.address) msg += `• *Address:* ${arch.address}\n`;
-        msg += `\n_Type "menu" to return to the main menu._`;
+        let msg = `Registration number: ${arch.regNumber || "Not Available"}\n`;
+        msg += `Architect name: ${arch.name || "Not Available"}\n`;
+        msg += `Registration Status: ${arch.status || "Active"}\n`;
+        msg += `${arch.validityDisplay || (arch.validity ? `Annual payment valid till ${arch.validity}` : "Endorsement due.")}`;
 
         sendTextMessage(userNumber, msg);
-        userStates[userNumber] = {};
+        userStates[userNumber] = { lastMessageId: messageId };
         return;
       }
 
@@ -163,14 +192,14 @@ async function runE2ETests() {
       msg += `\n_Type "menu" to return to the main menu._`;
 
       sendTextMessage(userNumber, msg);
-      userStates[userNumber] = { awaiting: "search_architect" };
+      userStates[userNumber] = { awaiting: "search_architect", lastMessageId: messageId };
     } catch (err) {
       console.error("Error in handleArchitectSearchFlow:", err);
       sendTextMessage(
         userNumber,
         "An unexpected error occurred while searching for architect records. Please try again later.\n\n_Type \"menu\" to return to the main menu._"
       );
-      userStates[userNumber] = {};
+      userStates[userNumber] = { lastMessageId: messageId };
     }
   }
 
@@ -261,7 +290,7 @@ async function runE2ETests() {
     }
   }
 
-  async function handleTextMessage(userNumber, rawUserMessage) {
+  async function handleTextMessage(userNumber, rawUserMessage, messageId = null) {
     const userMessage = (rawUserMessage || "").trim();
     const lower = userMessage.toLowerCase();
     const userState = userStates[userNumber] || {};
@@ -275,15 +304,15 @@ async function runE2ETests() {
       (/^(?:hi+|hello+|hey+|namaste)\b/i.test(lower) && lower.length <= 15);
 
     if (isGreetingOrMenu) {
-      userStates[userNumber] = { attempts: 0 };
+      userStates[userNumber] = { attempts: 0, lastMessageId: messageId };
       return sendWelcomeMessage(userNumber);
     }
 
     // 2. Direct Registration Number Recognition
     const regNoMatch = userMessage.match(/\b(CA\/\d{2,4}\/\d{3,7})\b/i);
     if (regNoMatch) {
-      userStates[userNumber] = {};
-      return handleArchitectSearchFlow(userNumber, regNoMatch[1].toUpperCase());
+      userStates[userNumber] = { lastMessageId: messageId };
+      return handleArchitectSearchFlow(userNumber, regNoMatch[1].toUpperCase(), messageId);
     }
 
     // 3. Active Awaiting States
@@ -294,13 +323,13 @@ async function runE2ETests() {
         earlyClassification.type === "DEPARTMENT_QUERY" ||
         earlyClassification.type === "PROMPT_SEARCH_ARCHITECT"
       ) {
-        userStates[userNumber] = {};
+        userStates[userNumber] = { lastMessageId: messageId };
         if (earlyClassification.type === "PROMPT_SEARCH_ARCHITECT") {
           sendTextMessage(
             userNumber,
             "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search."
           );
-          userStates[userNumber] = { awaiting: "search_architect", attempts: 0 };
+          userStates[userNumber] = { awaiting: "search_architect", attempts: 0, lastMessageId: messageId };
           return;
         }
         sendTextMessage(userNumber, earlyClassification.response);
@@ -310,7 +339,7 @@ async function runE2ETests() {
       switch (awaiting) {
         case "search_architect":
         case "architect_status":
-          await handleArchitectSearchFlow(userNumber, userMessage);
+          await handleArchitectSearchFlow(userNumber, userMessage, messageId);
           return;
         case "dispatch_status":
           await handleDispatchStatus(userNumber, userMessage);
@@ -319,7 +348,7 @@ async function runE2ETests() {
           await handleApplicationStatus(userNumber, userMessage);
           return;
         default:
-          userStates[userNumber] = { attempts: 0 };
+          userStates[userNumber] = { attempts: 0, lastMessageId: messageId };
           return sendWelcomeMessage(userNumber);
       }
     }
@@ -329,7 +358,7 @@ async function runE2ETests() {
 
     switch (classification.type) {
       case "SEARCH_ARCHITECT":
-        await handleArchitectSearchFlow(userNumber, classification.query);
+        await handleArchitectSearchFlow(userNumber, classification.query, messageId);
         break;
 
       case "PROMPT_SEARCH_ARCHITECT":
@@ -337,21 +366,21 @@ async function runE2ETests() {
           userNumber,
           "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search."
         );
-        userStates[userNumber] = { awaiting: "search_architect", attempts: 0 };
+        userStates[userNumber] = { awaiting: "search_architect", attempts: 0, lastMessageId: messageId };
         break;
 
       case "FAQ":
         sendTextMessage(userNumber, classification.response);
-        userStates[userNumber] = {};
+        userStates[userNumber] = { lastMessageId: messageId };
         break;
 
       case "DEPARTMENT_QUERY":
         sendTextMessage(userNumber, classification.response);
-        userStates[userNumber] = {};
+        userStates[userNumber] = { lastMessageId: messageId };
         break;
 
       case "MENU":
-        userStates[userNumber] = { attempts: 0 };
+        userStates[userNumber] = { attempts: 0, lastMessageId: messageId };
         sendWelcomeMessage(userNumber);
         break;
 
@@ -373,7 +402,7 @@ async function runE2ETests() {
             `• 🎫 *Samarthaya Ticket:* Type "Ticket"\n\n` +
             `_Type "menu" to view main options or ask your question directly._`;
           sendTextMessage(userNumber, guideMsg);
-          userStates[userNumber] = {};
+          userStates[userNumber] = { lastMessageId: messageId };
         }
         break;
     }
@@ -402,21 +431,24 @@ async function runE2ETests() {
       const userNumber = message.from;
       if (!userNumber) return 200;
       if (!userStates[userNumber]) userStates[userNumber] = {};
+      userStates[userNumber].lastMessageId = messageId || `msg_${Date.now()}`;
 
       if (message?.button) {
-        await handleButtonClick(userNumber, message.button.text);
+        await handleButtonClick(userNumber, message.button.text, messageId);
       } else if (message?.interactive?.button_reply) {
         await handleButtonClick(
           userNumber,
-          message.interactive.button_reply.title || message.interactive.button_reply.id
+          message.interactive.button_reply.title || message.interactive.button_reply.id,
+          messageId
         );
       } else if (message?.interactive?.list_reply) {
         await handleButtonClick(
           userNumber,
-          message.interactive.list_reply.title || message.interactive.list_reply.id
+          message.interactive.list_reply.title || message.interactive.list_reply.id,
+          messageId
         );
       } else if (message?.text?.body) {
-        await handleTextMessage(userNumber, message.text.body);
+        await handleTextMessage(userNumber, message.text.body, messageId);
       }
     }
     return 200;
@@ -681,9 +713,9 @@ async function runE2ETests() {
   console.log("==================================================");
   totalTests++;
   try {
-    // 1. Button "Architect Status"
+    // 1. Button "Search Architect"
     let countBefore = outgoingMessages.length;
-    await simulateWebhookPost(createButtonReplyPayload(TEST_USER, "Architect Status"));
+    await simulateWebhookPost(createButtonReplyPayload(TEST_USER, "Search Architect"));
     let resp = assertSingleResponseAndGet(countBefore);
 
     // 2. "CA/1975/00048"
@@ -691,7 +723,7 @@ async function runE2ETests() {
     await simulateWebhookPost(createTextMessagePayload(TEST_USER, "CA/1975/00048"));
     resp = assertSingleResponseAndGet(countBefore);
     assert.ok(resp.text.includes("PRAKASH NARAYAN"));
-    console.log("  Step 1: Architect Status -> CA/1975/00048 -> PRAKASH NARAYAN returned (1 response)");
+    console.log("  Step 1: Search Architect -> CA/1975/00048 -> PRAKASH NARAYAN returned (1 response)");
 
     // 3. "Hi"
     countBefore = outgoingMessages.length;
@@ -755,6 +787,41 @@ async function runE2ETests() {
     passedTests++;
   } catch (e) {
     console.error("❌ TEST 7 FAILED:", e.message, "\n");
+  }
+
+  console.log("==================================================");
+  console.log("TEST 8: Stale Async Operation Invalidation");
+  console.log("==================================================");
+  totalTests++;
+  try {
+    const staleMsgId = "wamid.STALE_IN_FLIGHT_MSG_001";
+    const newerMsgId = "wamid.NEWER_INTERIM_MSG_002";
+
+    // User sends a search request
+    userStates[TEST_USER] = { lastMessageId: staleMsgId };
+
+    // Before search finishes, user sends a new greeting message ("Hi")
+    let countBefore = outgoingMessages.length;
+    await simulateWebhookPost(createTextMessagePayload(TEST_USER, "Hi", newerMsgId));
+    let resp = assertSingleResponseAndGet(countBefore);
+    assert.ok(resp.template === "coa_welcome_menu" || (resp.text && resp.text.includes("Welcome to the Council of Architecture")));
+    console.log("  Interim message: 'Hi' -> Welcome menu response delivered (1 response)");
+
+    // Now the slow/stale search finishes for the older message ID
+    countBefore = outgoingMessages.length;
+    await handleArchitectSearchFlow(TEST_USER, "CA/1975/00048", staleMsgId);
+    const postStaleMessages = outgoingMessages.slice(countBefore);
+    assert.strictEqual(
+      postStaleMessages.length,
+      0,
+      "Stale in-flight search must be discarded and MUST NOT send an architect response"
+    );
+    console.log("  Stale search resolution: Ignored and discarded -> 0 unwanted messages sent");
+
+    console.log("✅ TEST 8 PASSED\n");
+    passedTests++;
+  } catch (e) {
+    console.error("❌ TEST 8 FAILED:", e.message, "\n");
   }
 
   console.log("================================================================================");
