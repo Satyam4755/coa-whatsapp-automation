@@ -3,29 +3,8 @@ import Lead from "../models/Lead.js";
 
 class ConversationService {
   constructor() {
-    this.activeConversations = new Map(); // userNumber -> { docId, coaCount, userCount, lastActivity, processedMessageIds: Set }
+    this.activeConversations = new Map(); // userNumber -> { docId, chat: Array, lastActivity, processedMessageIds: Set }
     this.sessionTtlMs = 24 * 60 * 60 * 1000; // 24-hour continuous conversation window
-  }
-
-  /**
-   * Helper to count max numeric suffix for a prefix (e.g. "User Message" or "COA Response") in a chat object
-   */
-  getMaxIndex(chatObj, prefix) {
-    if (!chatObj || typeof chatObj !== "object") return 0;
-    let max = 0;
-    const regex = new RegExp(`^${prefix}\\s*(\\d+)$`, "i");
-    const fallbackRegex = new RegExp(`^${prefix.toLowerCase().startsWith("user") ? "user" : "coa"}_(\\d+)$`, "i");
-
-    for (const key of Object.keys(chatObj)) {
-      const match = key.match(regex) || key.match(fallbackRegex);
-      if (match) {
-        const num = parseInt(match[1], 10);
-        if (!isNaN(num) && num > max) {
-          max = num;
-        }
-      }
-    }
-    return max;
   }
 
   /**
@@ -41,9 +20,7 @@ class ConversationService {
     }
 
     let docId = null;
-    let coaCount = 0;
-    let userCount = 0;
-    let chat = {};
+    let chat = [];
 
     if (mongoose.connection.readyState === 1) {
       try {
@@ -57,9 +34,7 @@ class ConversationService {
 
         if (latestDoc && latestDoc._id) {
           docId = latestDoc._id;
-          chat = latestDoc.chat || {};
-          coaCount = this.getMaxIndex(chat, "COA Response");
-          userCount = this.getMaxIndex(chat, "User Message");
+          chat = Array.isArray(latestDoc.chat) ? latestDoc.chat : [];
         }
       } catch (err) {
         console.warn("MongoDB check for active conversation warning:", err.message);
@@ -68,8 +43,6 @@ class ConversationService {
 
     const session = {
       docId,
-      coaCount,
-      userCount,
       chat,
       lastActivity: now,
       processedMessageIds: new Set(),
@@ -81,7 +54,9 @@ class ConversationService {
 
   /**
    * Atomically append a message to the user's conversation document
-   * Keys: "User Message 1", "User Message 2"... for User; "COA Response 1", "COA Response 2"... for COA
+   * Formats:
+   * - Incoming user message: { user: messageText }
+   * - Outgoing COA message: { coa: messageText }
    */
   async logMessage({ userNumber, sender, message, messageId = null }) {
     if (!userNumber || !message) return null;
@@ -90,7 +65,7 @@ class ConversationService {
       const cleanNumber = userNumber.toString().trim();
       const messageText = typeof message === "string" ? message : JSON.stringify(message);
       const isUser = sender === "User" || sender === "user";
-      const prefix = isUser ? "User Message" : "COA Response";
+      const chatEntry = isUser ? { user: messageText } : { coa: messageText };
 
       const session = await this.getOrCreateActiveSession(cleanNumber);
 
@@ -98,8 +73,8 @@ class ConversationService {
       if (messageId && session.processedMessageIds.has(messageId)) {
         return {
           docId: session.docId,
-          key: null,
-          message: messageText,
+          chatEntry,
+          chat: session.chat,
           deduplicated: true,
         };
       }
@@ -113,16 +88,7 @@ class ConversationService {
         }
       }
 
-      // Calculate next key index
-      if (isUser) {
-        session.userCount += 1;
-      } else {
-        session.coaCount += 1;
-      }
-
-      const nextIndex = isUser ? session.userCount : session.coaCount;
-      const keyName = `${prefix} ${nextIndex}`;
-      session.chat[keyName] = messageText;
+      session.chat.push(chatEntry);
       session.lastActivity = Date.now();
 
       // Persist to MongoDB if connected
@@ -132,25 +98,22 @@ class ConversationService {
           const newDoc = new Lead({
             userNumber: cleanNumber,
             chatDate: new Date(),
-            chat: {
-              [keyName]: messageText,
-            },
+            chat: [chatEntry],
           });
           const savedDoc = await newDoc.save();
           session.docId = savedDoc._id;
         } else {
-          // Append new key into chat object
+          // Atomically append new entry into chat array
           await Lead.updateOne(
             { _id: session.docId },
-            { $set: { [`chat.${keyName}`]: messageText } }
+            { $push: { chat: chatEntry } }
           );
         }
       }
 
       return {
         docId: session.docId,
-        key: keyName,
-        message: messageText,
+        chatEntry,
         chat: session.chat,
       };
     } catch (error) {
@@ -161,7 +124,7 @@ class ConversationService {
   }
 
   /**
-   * Log incoming user message
+   * Log incoming user message: { user: messageText }
    */
   async logUserMessage({ userNumber, message, messageId = null }) {
     return this.logMessage({
@@ -173,7 +136,7 @@ class ConversationService {
   }
 
   /**
-   * Log outgoing COA response message
+   * Log outgoing COA response message: { coa: messageText }
    */
   async logCoaMessage({ userNumber, message, messageId = null }) {
     return this.logMessage({

@@ -3,8 +3,8 @@ import mongoose from "mongoose";
 const leadSchema = new mongoose.Schema(
   {
     chat: {
-      type: mongoose.Schema.Types.Mixed,
-      default: () => ({}),
+      type: [mongoose.Schema.Types.Mixed],
+      default: () => [],
     },
     chatDate: {
       type: Date,
