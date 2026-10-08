@@ -1,48 +1,22 @@
 import mongoose from "mongoose";
 
-const chatMessageSchema = new mongoose.Schema(
-  {
-    sender: {
-      type: String,
-      enum: ["User", "COA", "user", "coa"],
-      required: true,
-    },
-    message: {
-      type: String,
-      required: true,
-    },
-    timestamp: {
-      type: Date,
-      default: Date.now,
-    },
-    messageId: {
-      type: String,
-      index: true,
-    },
-  },
-  { _id: false }
-);
-
 const leadSchema = new mongoose.Schema(
   {
-    conversationId: {
-      type: String,
-      required: true,
-      unique: true,
-      index: true,
+    chat: {
+      type: mongoose.Schema.Types.Mixed,
+      default: () => ({}),
+    },
+    chatDate: {
+      type: Date,
+      default: Date.now,
     },
     userNumber: {
       type: String,
       required: true,
       index: true,
     },
-    chatDate: {
-      type: Date,
-      default: Date.now,
-    },
-    chat: [chatMessageSchema],
 
-    // Backwards-compatible legacy lead fields
+    // Backwards-compatible legacy lead fields (if present in existing leads collection)
     CandidateName: { type: String },
     CandidateEmail: { type: String },
     CandidatePhone: { type: String },
@@ -53,16 +27,14 @@ const leadSchema = new mongoose.Schema(
     ConversationId: { type: String },
   },
   {
-    timestamps: true,
+    timestamps: false,
+    versionKey: false,
     strict: false,
     collection: "leads",
   }
 );
 
-// Add compound indexes for query efficiency
-leadSchema.index({ userNumber: 1, createdAt: -1 });
-leadSchema.index({ conversationId: 1 });
-leadSchema.index({ "chat.messageId": 1 });
+leadSchema.index({ userNumber: 1, chatDate: -1 });
 
 export const Lead = mongoose.model("Lead", leadSchema, "leads");
 export default Lead;

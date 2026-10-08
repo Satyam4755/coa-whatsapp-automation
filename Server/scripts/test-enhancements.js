@@ -410,95 +410,97 @@ async function runTests() {
   const { Lead } = await import("../models/Lead.js");
 
   // 25. Conversation Record Creation & Structure
-  await asyncTest("25. MongoDB - User message creates conversation record with required schema fields", async () => {
+  await asyncTest("25. MongoDB - User message creates conversation record with only _id, chat, chatDate, userNumber", async () => {
     const userNumber = "919999988881";
     const userMsg = "Hello COA";
     const res = await conversationService.logUserMessage({ userNumber, message: userMsg, messageId: "msg_test_01" });
 
     assert.ok(res, "Must return result object");
-    assert.ok(res.conversationId, "Must have unique conversationId");
-    assert.ok(res.conversationId.startsWith(`conv_${userNumber}_`));
-    assert.strictEqual(res.chatEntry.sender, "User");
-    assert.strictEqual(res.chatEntry.message, userMsg);
-    assert.ok(res.chatEntry.timestamp instanceof Date);
-    assert.strictEqual(res.chatEntry.messageId, "msg_test_01");
+    assert.strictEqual(res.key, "user_1");
+    assert.strictEqual(res.message, userMsg);
+    assert.strictEqual(res.chat["user_1"], userMsg);
+    assert.ok(!Array.isArray(res.chat), "Chat must NOT be an array");
+    assert.strictEqual(typeof res.chat, "object", "Chat must be an object");
   });
 
-  // 26. Multiple Messages Append to Same Conversation
-  await asyncTest("26. MongoDB - Multiple messages append to same continuous conversation", async () => {
+  // 26. Multiple Messages Append with Sequential Keys (user_1, coa_1, user_2, coa_2)
+  await asyncTest("26. MongoDB - Multiple messages append with sequential keys (user_1, coa_1, user_2, coa_2)", async () => {
     const userNumber = "919999988882";
-    const res1 = await conversationService.logUserMessage({ userNumber, message: "Hi", messageId: "msg_u1" });
-    const res2 = await conversationService.logCoaMessage({ userNumber, message: "Welcome to COA", messageId: "msg_c1" });
-    const res3 = await conversationService.logUserMessage({ userNumber, message: "CA/2021/12345", messageId: "msg_u2" });
+    const r1 = await conversationService.logUserMessage({ userNumber, message: "Hi", messageId: "msg_u1" });
+    const r2 = await conversationService.logCoaMessage({ userNumber, message: "Welcome to COA", messageId: "msg_c1" });
+    const r3 = await conversationService.logUserMessage({ userNumber, message: "CA/2021/12345", messageId: "msg_u2" });
+    const r4 = await conversationService.logCoaMessage({ userNumber, message: "Status details", messageId: "msg_c2" });
 
-    assert.strictEqual(res1.conversationId, res2.conversationId, "Must share conversationId");
-    assert.strictEqual(res2.conversationId, res3.conversationId, "Must share conversationId");
+    assert.strictEqual(r1.key, "user_1");
+    assert.strictEqual(r2.key, "coa_1");
+    assert.strictEqual(r3.key, "user_2");
+    assert.strictEqual(r4.key, "coa_2");
+
+    assert.strictEqual(r4.chat["user_1"], "Hi");
+    assert.strictEqual(r4.chat["coa_1"], "Welcome to COA");
+    assert.strictEqual(r4.chat["user_2"], "CA/2021/12345");
+    assert.strictEqual(r4.chat["coa_2"], "Status details");
   });
 
-  // 27. User and COA Senders are Preserved
-  await asyncTest("27. MongoDB - User and COA sender identities are properly normalized", async () => {
+  // 27. No Nested Array or Metadata Objects Inside Chat Entries
+  await asyncTest("27. MongoDB - Chat object values are direct message strings without metadata objects", async () => {
     const userNumber = "919999988883";
-    const resUser = await conversationService.logUserMessage({ userNumber, message: "User question", messageId: "u_msg_1" });
-    const resCoa = await conversationService.logCoaMessage({ userNumber, message: "COA answer", messageId: "coa_msg_1" });
+    const res = await conversationService.logUserMessage({ userNumber, message: "Direct string test", messageId: "u_msg_str" });
 
-    assert.strictEqual(resUser.chatEntry.sender, "User");
-    assert.strictEqual(resCoa.chatEntry.sender, "COA");
+    assert.strictEqual(typeof res.chat["user_1"], "string");
+    assert.strictEqual(res.chat["user_1"], "Direct string test");
+    assert.strictEqual(res.chat["user_1"].sender, undefined);
+    assert.strictEqual(res.chat["user_1"].timestamp, undefined);
   });
 
-  // 28. Message Chronological Order & Timestamps
-  await asyncTest("28. MongoDB - Message timestamps and chronological order are maintained", async () => {
+  // 28. Chronological Conversation Order Maintained via Key Suffixes
+  await asyncTest("28. MongoDB - Chronological order maintained with coa_1, coa_2, coa_3", async () => {
     const userNumber = "919999988884";
-    const t0 = Date.now();
-    const res1 = await conversationService.logUserMessage({ userNumber, message: "Step 1", messageId: "seq_1" });
-    const res2 = await conversationService.logCoaMessage({ userNumber, message: "Step 2", messageId: "seq_2" });
+    await conversationService.logCoaMessage({ userNumber, message: "Message 1", messageId: "coa_seq_1" });
+    await conversationService.logCoaMessage({ userNumber, message: "Message 2", messageId: "coa_seq_2" });
+    const r3 = await conversationService.logCoaMessage({ userNumber, message: "Message 3", messageId: "coa_seq_3" });
 
-    assert.ok(res1.chatEntry.timestamp.getTime() >= t0);
-    assert.ok(res2.chatEntry.timestamp.getTime() >= res1.chatEntry.timestamp.getTime());
+    assert.strictEqual(r3.chat["coa_1"], "Message 1");
+    assert.strictEqual(r3.chat["coa_2"], "Message 2");
+    assert.strictEqual(r3.chat["coa_3"], "Message 3");
   });
 
-  // 29. Unique Conversation ID Across Users
-  await asyncTest("29. MongoDB - Unique conversationId generated for different users", async () => {
-    const u1 = "919999988885";
-    const u2 = "919999988886";
-    const conv1 = await conversationService.getOrCreateActiveConversationId(u1);
-    const conv2 = await conversationService.getOrCreateActiveConversationId(u2);
-
-    assert.notStrictEqual(conv1, conv2, "Different users must have different conversationIds");
-  });
-
-  // 30. Deduplication by WhatsApp messageId
-  await asyncTest("30. MongoDB - Duplicate messageId is ignored without corrupting conversation", async () => {
-    const userNumber = "919999988887";
-    const duplicateId = "wamid.TEST_DEDUP_MSG_123";
+  // 29. Deduplication by WhatsApp messageId avoids duplicate key increments
+  await asyncTest("29. MongoDB - Duplicate messageId is ignored without creating extra keys", async () => {
+    const userNumber = "919999988885";
+    const duplicateId = "wamid.TEST_DEDUP_MSG_FLAT";
     const r1 = await conversationService.logUserMessage({ userNumber, message: "Hello", messageId: duplicateId });
     const r2 = await conversationService.logUserMessage({ userNumber, message: "Hello", messageId: duplicateId });
 
-    assert.ok(r1);
-    assert.ok(r2);
+    assert.strictEqual(r1.key, "user_1");
+    assert.strictEqual(r2.deduplicated, true);
+    assert.strictEqual(r2.key, null);
+    assert.strictEqual(r1.chat["user_2"], undefined);
   });
 
-  // 31. Multiple COA Responses Stored
-  await asyncTest("31. MongoDB - Multiple consecutive COA responses are all preserved", async () => {
-    const userNumber = "919999988888";
-    const r1 = await conversationService.logCoaMessage({ userNumber, message: "Response part 1", messageId: "coa_m1" });
-    const r2 = await conversationService.logCoaMessage({ userNumber, message: "Response part 2", messageId: "coa_m2" });
+  // 30. Multiple Consecutive COA Responses
+  await asyncTest("30. MongoDB - Multiple consecutive COA responses create coa_1, coa_2, coa_3", async () => {
+    const userNumber = "919999988886";
+    const r1 = await conversationService.logCoaMessage({ userNumber, message: "Part 1", messageId: "c_m1" });
+    const r2 = await conversationService.logCoaMessage({ userNumber, message: "Part 2", messageId: "c_m2" });
 
-    assert.strictEqual(r1.conversationId, r2.conversationId);
-    assert.strictEqual(r1.chatEntry.message, "Response part 1");
-    assert.strictEqual(r2.chatEntry.message, "Response part 2");
+    assert.strictEqual(r1.key, "coa_1");
+    assert.strictEqual(r2.key, "coa_2");
+    assert.strictEqual(r2.chat["coa_1"], "Part 1");
+    assert.strictEqual(r2.chat["coa_2"], "Part 2");
   });
 
-  // 32. Safe Non-Blocking Logging on MongoDB Failure
-  await asyncTest("32. MongoDB - Failure/offline mode does not crash or throw unhandled errors", async () => {
+  // 31. Safe Non-Blocking Logging on MongoDB Failure
+  await asyncTest("31. MongoDB - Failure/offline mode does not crash or throw unhandled errors", async () => {
     const safeNull = await conversationService.logMessage({ userNumber: null, message: null });
     assert.strictEqual(safeNull, null);
   });
 
-  // 33. Lead Model Schema Compatibility
-  test("33. MongoDB - Lead Mongoose schema preserves collection 'leads' and strict: false", () => {
+  // 32. Lead Model Schema Structure Compatibility
+  test("32. MongoDB - Lead Mongoose schema has only chat, chatDate, userNumber and no timestamps", () => {
     assert.strictEqual(Lead.collection.name, "leads");
     assert.strictEqual(Lead.schema.options.strict, false);
-    assert.ok(Lead.schema.path("conversationId"));
+    assert.strictEqual(Lead.schema.options.timestamps, false);
     assert.ok(Lead.schema.path("userNumber"));
     assert.ok(Lead.schema.path("chatDate"));
     assert.ok(Lead.schema.path("chat"));
