@@ -200,12 +200,17 @@ class CoaApiService {
   }
 
   getValidityDisplay(raw) {
-    const rawStatus = (raw.archStatus || raw.status || "").toString();
+    if (raw.validityText) {
+      return raw.validityText.toString().trim();
+    }
+
+    const rawStatus = (raw.archStatus || raw.status || raw.registrationStatus || "").toString();
     const rawValidity = (
       raw.archValidityUpTo ||
       raw.validity ||
       raw.valid_upto ||
       raw.validUntil ||
+      raw.validityUpTo ||
       ""
     ).toString();
 
@@ -274,6 +279,7 @@ class CoaApiService {
       raw.archStatus ||
       raw.status ||
       raw.registration_status ||
+      raw.registrationStatus ||
       "Active";
 
     // Clean HTML tags from status (e.g. <span class="DataRed">Endorsement Due</span>)
@@ -293,16 +299,17 @@ class CoaApiService {
       regNumber: regNumber.toString().trim().toUpperCase(),
       name: name.toString().trim(),
       status: cleanStatus,
-      validity: rawValidity ? this.formatDate(rawValidity, false) : "Not Available",
+      validity: raw.validityText ? raw.validityText.toString().trim() : (rawValidity ? this.formatDate(rawValidity, false) : "Not Available"),
       validityDisplay: validityDisplay,
-      rawValidity: rawValidity,
+      rawValidity: rawValidity || raw.validityText || "",
       address: [raw.CorresspondanceAddr, raw.district, raw.pincode].filter(Boolean).join(", "),
     };
   }
 
   /**
    * Search architect using ONLY the official CoA API (API_BASE_URL)
-   * No fallback endpoints or full-directory downloads.
+   * Verification uses GET /architects/verify?regNo=...
+   * Search by name uses GET /architects/search?name=... (or fallback)
    */
   async searchArchitect({ regNumber, name, query }) {
     const searchTerm = (regNumber || name || query || "").trim();
@@ -318,14 +325,15 @@ class CoaApiService {
     const client = this.getAxiosClient();
 
     try {
+      const endpoint = isRegNumber ? "/architects/verify" : "/architects/search";
       const params = isRegNumber
-        ? { reg_no: searchTerm.toUpperCase() }
-        : { name: searchTerm };
+        ? { regNo: searchTerm.toUpperCase() }
+        : { name: searchTerm, q: searchTerm };
 
-      const response = await client.get("", { params });
+      const response = await client.get(endpoint, { params });
 
       if (response && response.status >= 200 && response.status < 300 && response.data) {
-        let data = response.data.data || response.data;
+        let data = response.data?.data !== undefined ? response.data.data : response.data;
 
         if (Array.isArray(data) && data.length > 0) {
           const architects = data.map((item) => this.normalizeArchitect(item)).filter(Boolean);
@@ -338,7 +346,18 @@ class CoaApiService {
             };
           }
         } else if (typeof data === "object" && data !== null) {
-          if (data.archRegNum || data.reg_no || data.archName || data.name || data.archFirstName) {
+          if (
+            data.archRegNum ||
+            data.reg_no ||
+            data.registration_no ||
+            data.regNumber ||
+            data.registrationNumber ||
+            data.archName ||
+            data.name ||
+            data.architect_name ||
+            data.architectName ||
+            data.archFirstName
+          ) {
             const architect = this.normalizeArchitect(data);
             if (architect) {
               return {

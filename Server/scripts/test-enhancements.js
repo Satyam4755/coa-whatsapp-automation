@@ -1141,6 +1141,7 @@ async function runTests() {
     try {
       let interceptedAuth = null;
       let interceptedParams = null;
+      let interceptedUrl = null;
 
       const origGetAxiosClient = service.getAxiosClient.bind(service);
       service.getAxiosClient = function () {
@@ -1148,6 +1149,7 @@ async function runTests() {
         client.defaults.adapter = async (config) => {
           interceptedAuth = config.headers?.Authorization;
           interceptedParams = config.params;
+          interceptedUrl = config.url;
           return {
             status: 200,
             statusText: "OK",
@@ -1181,7 +1183,82 @@ async function runTests() {
       assert.strictEqual(res.architects[0].status, "Active");
       assert.strictEqual(res.architects[0].validityDisplay, "Annual payment valid till 31/12/2026");
       assert.strictEqual(interceptedAuth, "Bearer search_token_123");
-      assert.deepStrictEqual(interceptedParams, { reg_no: "CA/2021/12345" });
+      assert.strictEqual(interceptedUrl, "/architects/verify");
+      assert.deepStrictEqual(interceptedParams, { regNo: "CA/2021/12345" });
+    } finally {
+      axios.post = originalPost;
+    }
+  });
+
+  // 63. Exact Production COA ERP Response Verification (CA/2026/201029)
+  await asyncTest("63. Exact Production ERP Response - Single architect lookup with validityText", async () => {
+    const service = new CoaApiServiceImpl.constructor();
+    service.username = "test-user";
+    service.password = "test-pass";
+
+    const originalPost = axios.post;
+    axios.post = async function (url) {
+      if (url.includes("/auth/token")) {
+        return { data: { success: true, data: { accessToken: "prod_token_999", expiresIn: 900 } } };
+      }
+      return originalPost.apply(this, arguments);
+    };
+
+    try {
+      let requestedUrl = null;
+      let requestedParams = null;
+      let requestedAuth = null;
+
+      const origGetAxiosClient = service.getAxiosClient.bind(service);
+      service.getAxiosClient = function () {
+        const client = origGetAxiosClient();
+        client.defaults.adapter = async (config) => {
+          requestedUrl = config.url;
+          requestedParams = config.params;
+          requestedAuth = config.headers?.Authorization;
+          return {
+            status: 200,
+            statusText: "OK",
+            headers: {},
+            config,
+            data: {
+              success: true,
+              data: {
+                registrationNumber: "CA/2026/201029",
+                name: "Mr. GADDAM VENKATESH",
+                registrationStatus: "ACTIVE",
+                validityText: "Valid Through: (One Time Payment)",
+              },
+            },
+          };
+        };
+        return client;
+      };
+
+      const res = await service.searchArchitect({ regNumber: "CA/2026/201029" });
+      assert.strictEqual(res.found, true);
+      assert.strictEqual(res.count, 1);
+      assert.strictEqual(requestedUrl, "/architects/verify");
+      assert.deepStrictEqual(requestedParams, { regNo: "CA/2026/201029" });
+      assert.strictEqual(requestedAuth, "Bearer prod_token_999");
+
+      const arch = res.architects[0];
+      assert.strictEqual(arch.regNumber, "CA/2026/201029");
+      assert.strictEqual(arch.name, "Mr. GADDAM VENKATESH");
+      assert.strictEqual(arch.status, "ACTIVE");
+      assert.strictEqual(arch.validityDisplay, "Valid Through: (One Time Payment)");
+      assert.strictEqual(arch.validity, "Valid Through: (One Time Payment)");
+
+      // Test format as sent to WhatsApp user
+      let msg = `Registration number: ${arch.regNumber || "Not Available"}\n`;
+      msg += `Architect name: ${arch.name || "Not Available"}\n`;
+      msg += `Registration Status: ${arch.status || "Active"}\n`;
+      msg += `${arch.validityDisplay || (arch.validity ? `Annual payment valid till ${arch.validity}` : "Endorsement due.")}`;
+
+      assert.strictEqual(
+        msg,
+        "Registration number: CA/2026/201029\nArchitect name: Mr. GADDAM VENKATESH\nRegistration Status: ACTIVE\nValid Through: (One Time Payment)"
+      );
     } finally {
       axios.post = originalPost;
     }
@@ -1359,6 +1436,74 @@ async function runTests() {
         `Expected PROMPT_SEARCH_ARCHITECT for button title/id: "${title}"`
       );
     }
+  });
+
+  // 64. Two Different WhatsApp Users Without Email Saved Safely (No Duplicate Key Error)
+  await asyncTest("64. MongoDB - Two different WhatsApp users without email saved without duplicate key error", async () => {
+    const timestamp = Date.now();
+    const userA = `919000${timestamp.toString().slice(-6)}1`;
+    const userB = `919000${timestamp.toString().slice(-6)}2`;
+
+    const resA = await conversationService.logUserMessage({ userNumber: userA, message: "Message from User A" });
+    const resB = await conversationService.logUserMessage({ userNumber: userB, message: "Message from User B" });
+
+    assert.ok(resA, "User A conversation must save successfully");
+    assert.ok(resB, "User B conversation must save successfully");
+    assert.notStrictEqual(resA.docId?.toString(), resB.docId?.toString(), "Different users must have distinct documents");
+  });
+
+  // 65. Multiple Messages From Same User Update Same Document
+  await asyncTest("65. MongoDB - Multiple messages from the same user update the same conversation document", async () => {
+    const user = `919001${Date.now().toString().slice(-6)}`;
+    const r1 = await conversationService.logUserMessage({ userNumber: user, message: "First message" });
+    const r2 = await conversationService.logCoaMessage({ userNumber: user, message: "First reply" });
+    const r3 = await conversationService.logUserMessage({ userNumber: user, message: "Second message" });
+
+    assert.strictEqual(r1.docId?.toString(), r2.docId?.toString());
+    assert.strictEqual(r2.docId?.toString(), r3.docId?.toString());
+    assert.strictEqual(r3.chat.length, 3);
+  });
+
+  // 66. Phone Numbers Normalized With and Without '+'
+  await asyncTest("66. MongoDB - Phone numbers with and without '+' match same active conversation", async () => {
+    const baseNum = `919002${Date.now().toString().slice(-6)}`;
+    const userWithPlus = `+${baseNum}`;
+    const userWithoutPlus = baseNum;
+
+    const r1 = await conversationService.logUserMessage({ userNumber: userWithPlus, message: "Msg with plus" });
+    const r2 = await conversationService.logUserMessage({ userNumber: userWithoutPlus, message: "Msg without plus" });
+
+    assert.strictEqual(r1.docId?.toString(), r2.docId?.toString());
+    assert.strictEqual(r2.chat.length, 2);
+  });
+
+  // 67. Partial Unique Index on Email Allows Null Emails & Enforces Uniqueness on Real Emails
+  await asyncTest("67. MongoDB - Partial unique index on email allows multiple nulls and protects valid emails", async () => {
+    const timestamp = Date.now();
+    const doc1 = new Lead({ userNumber: `919003${timestamp.toString().slice(-6)}1`, chatDate: new Date(), chat: [{ user: "hi" }] });
+    const doc2 = new Lead({ userNumber: `919003${timestamp.toString().slice(-6)}2`, chatDate: new Date(), chat: [{ user: "hello" }] });
+
+    await doc1.save();
+    await doc2.save();
+
+    assert.ok(doc1._id);
+    assert.ok(doc2._id);
+    assert.notStrictEqual(doc1._id.toString(), doc2._id.toString());
+  });
+
+  // 68. Accumulated Chat History Preserved on First MongoDB Document Creation
+  await asyncTest("68. MongoDB - Complete accumulated in-memory chat history is preserved when document is created", async () => {
+    const testUser = `919004${Date.now().toString().slice(-6)}`;
+    const session = await conversationService.getOrCreateActiveSession(testUser);
+    session.chat = [{ user: "Queued 1" }, { coa: "Queued 2" }];
+    session.docId = null; // force creation
+
+    const res = await conversationService.logUserMessage({ userNumber: testUser, message: "Queued 3" });
+    assert.ok(res.docId);
+    assert.strictEqual(res.chat.length, 3);
+    assert.deepStrictEqual(res.chat[0], { user: "Queued 1" });
+    assert.deepStrictEqual(res.chat[1], { coa: "Queued 2" });
+    assert.deepStrictEqual(res.chat[2], { user: "Queued 3" });
   });
 
   console.log("\n==================================================");

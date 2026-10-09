@@ -5,12 +5,63 @@ class ConversationService {
   constructor() {
     this.activeConversations = new Map(); // userNumber -> { docId, chat: Array, lastActivity, processedMessageIds: Set }
     this.sessionTtlMs = 24 * 60 * 60 * 1000; // 24-hour continuous conversation window
+    this.indexesEnsured = false;
+  }
+
+  /**
+   * Normalize user phone numbers to clean digits without leading '+' or whitespace
+   */
+  normalizeUserNumber(userNumber) {
+    if (!userNumber) return "";
+    return userNumber.toString().replace(/^\+/, "").replace(/\s+/g, "").trim();
+  }
+
+  /**
+   * Ensure MongoDB indexes are safe and non-blocking for documents with null/missing emails
+   */
+  async ensureSafeIndexes() {
+    if (this.indexesEnsured || mongoose.connection.readyState !== 1) return;
+    try {
+      const collection = Lead.collection;
+      const indexes = await collection.indexes();
+
+      // Check legacy email_1 index
+      const legacyEmailIndex = indexes.find(
+        (idx) => idx.name === "email_1" && idx.unique && !idx.partialFilterExpression
+      );
+      if (legacyEmailIndex) {
+        try {
+          await collection.dropIndex("email_1");
+        } catch (dropErr) {
+          console.warn("Legacy email_1 index drop warning:", dropErr.message);
+        }
+      }
+
+      // Check legacy conversationId_1 index
+      const legacyConvIdIndex = indexes.find(
+        (idx) => idx.name === "conversationId_1" && idx.unique && !idx.partialFilterExpression
+      );
+      if (legacyConvIdIndex) {
+        try {
+          await collection.dropIndex("conversationId_1");
+        } catch (dropErr) {
+          console.warn("Legacy conversationId_1 index drop warning:", dropErr.message);
+        }
+      }
+
+      // Sync schema indexes with partial unique filters
+      await Lead.syncIndexes();
+      this.indexesEnsured = true;
+    } catch (err) {
+      console.warn("Index safety check warning:", err.message);
+    }
   }
 
   /**
    * Get active session info for a user or initialize from MongoDB / create new
    */
-  async getOrCreateActiveSession(cleanNumber) {
+  async getOrCreateActiveSession(userNumber) {
+    const cleanNumber = this.normalizeUserNumber(userNumber);
     const now = Date.now();
     const cached = this.activeConversations.get(cleanNumber);
 
@@ -24,6 +75,7 @@ class ConversationService {
 
     if (mongoose.connection.readyState === 1) {
       try {
+        await this.ensureSafeIndexes();
         const cutoff = new Date(now - this.sessionTtlMs);
         const latestDoc = await Lead.findOne({
           userNumber: cleanNumber,
@@ -62,7 +114,7 @@ class ConversationService {
     if (!userNumber || !message) return null;
 
     try {
-      const cleanNumber = userNumber.toString().trim();
+      const cleanNumber = this.normalizeUserNumber(userNumber);
       const messageText = typeof message === "string" ? message : JSON.stringify(message);
       const isUser = sender === "User" || sender === "user";
       const chatEntry = isUser ? { user: messageText } : { coa: messageText };
@@ -93,12 +145,13 @@ class ConversationService {
 
       // Persist to MongoDB if connected
       if (mongoose.connection.readyState === 1) {
+        await this.ensureSafeIndexes();
         if (!session.docId) {
-          // Create new document with only _id, chat, chatDate, userNumber
+          // Create new document with full accumulated chat history
           const newDoc = new Lead({
             userNumber: cleanNumber,
             chatDate: new Date(),
-            chat: [chatEntry],
+            chat: [...session.chat],
           });
           const savedDoc = await newDoc.save();
           session.docId = savedDoc._id;
@@ -164,9 +217,10 @@ class ConversationService {
    * Retrieve latest conversation for user
    */
   async getLatestConversationForUser(userNumber) {
-    if (!userNumber || mongoose.connection.readyState !== 1) return null;
+    const cleanNumber = this.normalizeUserNumber(userNumber);
+    if (!cleanNumber || mongoose.connection.readyState !== 1) return null;
     try {
-      return await Lead.findOne({ userNumber: userNumber.toString().trim() })
+      return await Lead.findOne({ userNumber: cleanNumber })
         .sort({ chatDate: -1 })
         .lean();
     } catch (err) {
