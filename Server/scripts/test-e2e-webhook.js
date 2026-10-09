@@ -152,15 +152,39 @@ async function runE2ETests() {
         message: "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search.",
         state: "search_architect",
       },
+      "search_architect": {
+        message: "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search.",
+        state: "search_architect",
+      },
       "Verify Architect": {
         message: "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to verify.",
+        state: "search_architect",
+      },
+      "verify_architect": {
+        message: "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to verify.",
+        state: "search_architect",
+      },
+      "Architect Status": {
+        message: "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search.",
+        state: "search_architect",
+      },
+      "architect_status": {
+        message: "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search.",
         state: "search_architect",
       },
       "Dispatch Status": {
         message: "Enter Registered Mobile No. to check status.",
         state: "dispatch_status",
       },
+      "dispatch_status": {
+        message: "Enter Registered Mobile No. to check status.",
+        state: "dispatch_status",
+      },
       "Application Status": {
+        message: "Enter Application No. to check status.",
+        state: "application_status",
+      },
+      "application_status": {
         message: "Enter Application No. to check status.",
         state: "application_status",
       },
@@ -173,6 +197,15 @@ async function runE2ETests() {
     }
 
     const classification = queryRouterService.classifyQuery(title);
+    if (classification.type === "PROMPT_SEARCH_ARCHITECT") {
+      sendTextMessage(
+        userNumber,
+        "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search."
+      );
+      updateUserState(userNumber, { awaiting: "search_architect", attempts: 0, lastMessageId: messageId });
+      return;
+    }
+
     if (classification.type === "DEPARTMENT_QUERY" || classification.type === "FAQ") {
       sendTextMessage(userNumber, classification.response);
       resetUserState(userNumber, { lastMessageId: messageId });
@@ -1136,6 +1169,40 @@ async function runE2ETests() {
     passedTests++;
   } catch (e) {
     console.error("❌ TEST 14 FAILED:", e.message, "\n");
+  }
+
+  console.log("==================================================");
+  console.log("TEST 15: Button 'Architect Status' Prompts For Registration Number (Regression Fix)");
+  console.log("==================================================");
+  totalTests++;
+  try {
+    // 1. User clicks "Architect Status" button (or sends button_reply with title "Architect Status")
+    let countBefore = outgoingMessages.length;
+    await simulateWebhookPost(createButtonReplyPayload(TEST_USER, "Architect Status", "architect_status"));
+    let resp = assertSingleResponseAndGet(countBefore);
+
+    // Must prompt for registration number or name, NOT send the welcome message
+    assert.ok(
+      resp.text && resp.text.includes("Search Architect / Verify Architect"),
+      `Expected prompt message but got: ${resp.text || resp.template}`
+    );
+    assert.ok(
+      !resp.template && !(resp.text && resp.text.includes("Welcome to the Council of Architecture")),
+      "Must not resend welcome message on Architect Status button click"
+    );
+    assert.strictEqual(userStates[TEST_USER].awaiting, "search_architect");
+
+    // 2. User replies with registration number
+    countBefore = outgoingMessages.length;
+    await simulateWebhookPost(createTextMessagePayload(TEST_USER, "CA/1975/00048"));
+    resp = assertSingleResponseAndGet(countBefore);
+    assert.ok(resp.text.includes("PRAKASH NARAYAN"), "Must return architect record for valid registration number");
+
+    console.log("  Button 'Architect Status' -> Prompts for registration number -> Lookup succeeds");
+    console.log("✅ TEST 15 PASSED\n");
+    passedTests++;
+  } catch (e) {
+    console.error("❌ TEST 15 FAILED:", e.message, "\n");
   }
 
   console.log("================================================================================");

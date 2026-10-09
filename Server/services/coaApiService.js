@@ -9,40 +9,154 @@ class CoaApiService {
   constructor() {
     this.apiBaseUrl = (
       process.env.API_BASE_URL ||
-      "https://coa.org.in/api/external/whatsapp"
+      "https://coa-portal.prodioslabs.in/api/external/whatsapp"
     ).replace(/\/+$/, "");
 
     this.username = process.env.WHATSAPP_BASIC_AUTH_USERNAME || "coa-erp-portal";
     this.password = process.env.WHATSAPP_BASIC_AUTH_PASSWORD || "";
-    this.timeout = 3000; // 3 seconds timeout for fast responsive handling
+    this.timeout = 5000;
+
+    this.cachedAccessToken = null;
+    this.tokenExpiresAt = 0;
+    this.tokenFetchPromise = null;
   }
 
-  getAuthHeader() {
-    if (!this.username && !this.password) return null;
+  getBasicAuthHeader() {
+    if (!this.username || !this.password) return null;
     const token = Buffer.from(`${this.username}:${this.password}`).toString(
       "base64"
     );
     return `Basic ${token}`;
   }
 
-  getAxiosClient() {
-    const headers = {
-      Accept: "application/json, text/plain, */*",
-      "Content-Type": "application/json",
-    };
+  getAuthHeader() {
+    return this.getBasicAuthHeader();
+  }
 
-    const authHeader = this.getAuthHeader();
-    if (authHeader) {
-      headers.Authorization = authHeader;
+  invalidateToken() {
+    this.cachedAccessToken = null;
+    this.tokenExpiresAt = 0;
+    this.tokenFetchPromise = null;
+  }
+
+  async getAccessToken(forceRefresh = false) {
+    if (forceRefresh) {
+      this.invalidateToken();
     }
 
-    return axios.create({
+    const now = Date.now();
+    // Use cached token if valid and not within 60s early refresh margin
+    if (!forceRefresh && this.cachedAccessToken && this.tokenExpiresAt - now > 60 * 1000) {
+      return this.cachedAccessToken;
+    }
+
+    // Deduplicate in-flight token fetch requests across concurrent callers
+    if (this.tokenFetchPromise) {
+      return this.tokenFetchPromise;
+    }
+
+    let fetchPromise = null;
+    fetchPromise = (async () => {
+      try {
+        const basicAuth = this.getBasicAuthHeader();
+        if (!basicAuth) {
+          throw new Error("Missing WhatsApp Basic Auth credentials for COA ERP API");
+        }
+
+        const authUrl = `${this.apiBaseUrl}/auth/token`;
+        const response = await axios.post(
+          authUrl,
+          {},
+          {
+            headers: {
+              Authorization: basicAuth,
+              Accept: "application/json",
+              "Content-Type": "application/json",
+            },
+            timeout: this.timeout,
+            httpsAgent,
+          }
+        );
+
+        const data = response?.data?.data || response?.data;
+        const accessToken = data?.accessToken;
+        const expiresIn = Number(data?.expiresIn) || 900;
+
+        if (!accessToken) {
+          throw new Error("COA ERP API /auth/token response missing accessToken");
+        }
+
+        this.cachedAccessToken = accessToken;
+        this.tokenExpiresAt = Date.now() + expiresIn * 1000;
+        return this.cachedAccessToken;
+      } catch (err) {
+        this.invalidateToken();
+        console.error("COA ERP API token acquisition failed:", err.message);
+        throw err;
+      } finally {
+        if (this.tokenFetchPromise === fetchPromise) {
+          this.tokenFetchPromise = null;
+        }
+      }
+    })();
+
+    this.tokenFetchPromise = fetchPromise;
+    return this.tokenFetchPromise;
+  }
+
+  getAxiosClient() {
+    const client = axios.create({
       baseURL: this.apiBaseUrl,
-      headers,
+      headers: {
+        Accept: "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+      },
       timeout: this.timeout,
       httpsAgent,
-      validateStatus: (status) => status < 500,
     });
+
+    // Request interceptor: attach Bearer token to resource requests
+    client.interceptors.request.use(
+      async (config) => {
+        try {
+          const token = await this.getAccessToken();
+          if (token) {
+            config.headers = config.headers || {};
+            config.headers.Authorization = `Bearer ${token}`;
+          }
+        } catch (tokenErr) {
+          console.error("Failed to attach Bearer token to request:", tokenErr.message);
+        }
+        return config;
+      },
+      (error) => Promise.reject(error)
+    );
+
+    // Response interceptor: retry on 401 once with refreshed token
+    client.interceptors.response.use(
+      (response) => response,
+      async (error) => {
+        const originalRequest = error.config;
+        if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
+          originalRequest._retry = true;
+          this.invalidateToken();
+          try {
+            const newToken = await this.getAccessToken(true);
+            if (newToken) {
+              originalRequest.headers = originalRequest.headers || {};
+              originalRequest.headers.Authorization = `Bearer ${newToken}`;
+              return client(originalRequest);
+            }
+          } catch (refreshErr) {
+            console.error("Retry failed after 401:", refreshErr.message);
+            return Promise.reject(refreshErr);
+          }
+        }
+        return Promise.reject(error);
+      }
+    );
+
+    return client;
   }
 
   formatDate(dateStr, twoDigitYear = false) {

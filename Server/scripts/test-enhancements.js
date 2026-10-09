@@ -1,4 +1,5 @@
 import assert from "assert";
+import axios from "axios";
 import "dotenv/config";
 import coaApiService from "../services/coaApiService.js";
 import faqService from "../services/faqService.js";
@@ -224,15 +225,32 @@ async function runTests() {
 
   // 13. CoA API Service - Architect normalization and response verification
   await asyncTest("13. CoA API Service - Architect normalization and response structure verification", async () => {
+    const origGetAxiosClient = coaApiService.getAxiosClient.bind(coaApiService);
+    coaApiService.getAxiosClient = function () {
+      return {
+        get: async () => ({
+          status: 200,
+          data: [{
+            archFirstName: "PRAKASH",
+            archLastName: "NARAYAN",
+            archRegNum: "CA/1975/00048",
+            archStatus: "Defaulter",
+            archValidityUpTo: "31/December/1976",
+          }],
+        }),
+      };
+    };
+
     try {
       const res = await coaApiService.searchArchitect({ regNumber: "CA/1975/00048" });
-      if (res && res.found && res.architects.length > 0) {
-        const arch = res.architects[0];
-        assert.strictEqual(arch.regNumber, "CA/1975/00048");
-      }
-    } catch {
-      // Ignore upstream network fluctuation in unit test
+      assert.strictEqual(res.found, true);
+      assert.strictEqual(res.architects.length, 1);
+      assert.strictEqual(res.architects[0].regNumber, "CA/1975/00048");
+      assert.strictEqual(res.architects[0].name, "PRAKASH NARAYAN");
+    } finally {
+      coaApiService.getAxiosClient = origGetAxiosClient;
     }
+
     const sample = {
       archFirstName: "PRAKASH",
       archLastName: "NARAYAN",
@@ -248,16 +266,51 @@ async function runTests() {
 
   // 14. CoA API Service - Architect search by Name
   await asyncTest("14. CoA API Service - Architect search by Name", async () => {
-    const res = await coaApiService.searchArchitect({ name: "Sharma" });
-    assert.ok(typeof res.found === "boolean");
-    assert.ok(Array.isArray(res.architects));
+    const origGetAxiosClient = coaApiService.getAxiosClient.bind(coaApiService);
+    coaApiService.getAxiosClient = function () {
+      return {
+        get: async () => ({
+          status: 200,
+          data: [{
+            archFirstName: "RAJESH",
+            archLastName: "SHARMA",
+            archRegNum: "CA/2005/12345",
+            archStatus: "Active",
+            archValidityUpTo: "31/December/2026",
+          }],
+        }),
+      };
+    };
+
+    try {
+      const res = await coaApiService.searchArchitect({ name: "Sharma" });
+      assert.strictEqual(res.found, true);
+      assert.strictEqual(res.architects.length, 1);
+      assert.strictEqual(res.architects[0].name, "RAJESH SHARMA");
+    } finally {
+      coaApiService.getAxiosClient = origGetAxiosClient;
+    }
   });
 
   // 15. CoA API Service - No result search
   await asyncTest("15. CoA API Service - No result architect search", async () => {
-    const res = await coaApiService.searchArchitect({ query: "NonExistentArchitectNameXYZ999" });
-    assert.strictEqual(res.found, false);
-    assert.strictEqual(res.architects.length, 0);
+    const origGetAxiosClient = coaApiService.getAxiosClient.bind(coaApiService);
+    coaApiService.getAxiosClient = function () {
+      return {
+        get: async () => ({
+          status: 200,
+          data: [],
+        }),
+      };
+    };
+
+    try {
+      const res = await coaApiService.searchArchitect({ query: "NonExistentArchitectNameXYZ999" });
+      assert.strictEqual(res.found, false);
+      assert.strictEqual(res.architects.length, 0);
+    } finally {
+      coaApiService.getAxiosClient = origGetAxiosClient;
+    }
   });
 
   // 16. State Machine - Fresh greeting after completed architect lookup
@@ -799,6 +852,513 @@ async function runTests() {
     // Check if old async callback is allowed
     const isSuperseded = isRequestSuperseded(user, "msg_old", sessionTokenOld);
     assert.strictEqual(isSuperseded, true, "Async response from old session must be rejected");
+  });
+
+  // ==================================================
+  // FEATURE 4: COA ERP API PHASE 1 AUTHENTICATION TESTS
+  // ==================================================
+  const { default: CoaApiServiceImpl } = await import("../services/coaApiService.js");
+
+  // 50. Basic Auth formatting for /auth/token
+  test("50. COA ERP Auth - Basic Auth header generated from credentials", () => {
+    const service = new CoaApiServiceImpl.constructor();
+    service.username = "test-user";
+    service.password = "test-pass";
+    const header = service.getBasicAuthHeader();
+    const expected = `Basic ${Buffer.from("test-user:test-pass").toString("base64")}`;
+    assert.strictEqual(header, expected);
+  });
+
+  // 51. Token Acquisition, Caching, and Reuse
+  await asyncTest("51. COA ERP Auth - getAccessToken acquires, caches, and reuses token", async () => {
+    const service = new CoaApiServiceImpl.constructor();
+    service.username = "test-user";
+    service.password = "test-pass";
+
+    let tokenCalls = 0;
+    const originalPost = axios.post;
+    axios.post = async function (url, body, config) {
+      if (url.includes("/auth/token")) {
+        tokenCalls++;
+        assert.ok(config.headers.Authorization.startsWith("Basic "));
+        return {
+          data: {
+            success: true,
+            data: {
+              accessToken: "mock_jwt_token_12345",
+              expiresIn: 900,
+              tokenType: "Bearer",
+            },
+          },
+        };
+      }
+      return originalPost.apply(this, arguments);
+    };
+
+    try {
+      // 1. Initial fetch
+      const token1 = await service.getAccessToken();
+      assert.strictEqual(token1, "mock_jwt_token_12345");
+      assert.strictEqual(tokenCalls, 1);
+
+      // 2. Second fetch within TTL reuses cache
+      const token2 = await service.getAccessToken();
+      assert.strictEqual(token2, "mock_jwt_token_12345");
+      assert.strictEqual(tokenCalls, 1, "Cached token must be reused without repeat /auth/token call");
+    } finally {
+      axios.post = originalPost;
+    }
+  });
+
+  // 52. Expired Token Refresh
+  await asyncTest("52. COA ERP Auth - Expired or near-expiry token is refreshed", async () => {
+    const service = new CoaApiServiceImpl.constructor();
+    service.username = "test-user";
+    service.password = "test-pass";
+
+    let tokenCalls = 0;
+    const originalPost = axios.post;
+    axios.post = async function (url, body, config) {
+      if (url.includes("/auth/token")) {
+        tokenCalls++;
+        return {
+          data: {
+            success: true,
+            data: {
+              accessToken: `mock_token_gen_${tokenCalls}`,
+              expiresIn: 900,
+              tokenType: "Bearer",
+            },
+          },
+        };
+      }
+      return originalPost.apply(this, arguments);
+    };
+
+    try {
+      const token1 = await service.getAccessToken();
+      assert.strictEqual(token1, "mock_token_gen_1");
+
+      // Set token expiry to 30s in future (within 60s early refresh threshold)
+      service.tokenExpiresAt = Date.now() + 30 * 1000;
+
+      const token2 = await service.getAccessToken();
+      assert.strictEqual(token2, "mock_token_gen_2");
+      assert.strictEqual(tokenCalls, 2, "Token within 60s of expiry must be refreshed");
+    } finally {
+      axios.post = originalPost;
+    }
+  });
+
+  // 53. Concurrent Token Fetch Deduplication
+  await asyncTest("53. COA ERP Auth - Concurrent requests share a single in-flight token request", async () => {
+    const service = new CoaApiServiceImpl.constructor();
+    service.username = "test-user";
+    service.password = "test-pass";
+
+    let tokenCalls = 0;
+    const originalPost = axios.post;
+    axios.post = async function (url, body, config) {
+      if (url.includes("/auth/token")) {
+        tokenCalls++;
+        await new Promise((r) => setTimeout(r, 50));
+        return {
+          data: {
+            success: true,
+            data: {
+              accessToken: "shared_token_concurrent",
+              expiresIn: 900,
+              tokenType: "Bearer",
+            },
+          },
+        };
+      }
+      return originalPost.apply(this, arguments);
+    };
+
+    try {
+      const [t1, t2, t3] = await Promise.all([
+        service.getAccessToken(),
+        service.getAccessToken(),
+        service.getAccessToken(),
+      ]);
+      assert.strictEqual(t1, "shared_token_concurrent");
+      assert.strictEqual(t2, "shared_token_concurrent");
+      assert.strictEqual(t3, "shared_token_concurrent");
+      assert.strictEqual(tokenCalls, 1, "Exactly one /auth/token network call for concurrent callers");
+    } finally {
+      axios.post = originalPost;
+    }
+  });
+
+  // 54. Resource Request Uses Bearer Token and Handles 401 Recovery
+  await asyncTest("54. COA ERP Auth - Resource request uses Bearer token and retries once on 401", async () => {
+    const service = new CoaApiServiceImpl.constructor();
+    service.username = "test-user";
+    service.password = "test-pass";
+
+    let tokenCalls = 0;
+    let resourceCalls = 0;
+    const originalPost = axios.post;
+
+    axios.post = async function (url, body, config) {
+      if (url.includes("/auth/token")) {
+        tokenCalls++;
+        return {
+          data: {
+            success: true,
+            data: {
+              accessToken: `token_v${tokenCalls}`,
+              expiresIn: 900,
+            },
+          },
+        };
+      }
+      return originalPost.apply(this, arguments);
+    };
+
+    try {
+      const client = service.getAxiosClient();
+      client.defaults.adapter = async (config) => {
+        resourceCalls++;
+        assert.ok(config.headers.Authorization.startsWith("Bearer "));
+        if (resourceCalls === 1) {
+          // First attempt returns 401
+          const err = new Error("Request failed with status code 401");
+          err.response = { status: 401, data: { message: "Unauthorized" } };
+          err.config = config;
+          throw err;
+        }
+        // Second attempt succeeds with new token
+        assert.strictEqual(config.headers.Authorization, "Bearer token_v2");
+        return {
+          status: 200,
+          data: [{ archRegNum: "CA/2021/11111", archName: "Retried Architect" }],
+        };
+      };
+
+      const res = await client.get("/search");
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(resourceCalls, 2, "Resource request must be retried once");
+      assert.strictEqual(tokenCalls, 2, "Fresh token must be fetched after 401");
+    } finally {
+      axios.post = originalPost;
+    }
+  });
+
+  // 55. Second 401 Does Not Retry Indefinitely
+  await asyncTest("55. COA ERP Auth - Second 401 is rejected without looping", async () => {
+    const service = new CoaApiServiceImpl.constructor();
+    service.username = "test-user";
+    service.password = "test-pass";
+
+    let resourceCalls = 0;
+    const originalPost = axios.post;
+    axios.post = async function (url) {
+      if (url.includes("/auth/token")) {
+        return { data: { success: true, data: { accessToken: "bad_token", expiresIn: 900 } } };
+      }
+      return originalPost.apply(this, arguments);
+    };
+
+    try {
+      const client = service.getAxiosClient();
+      client.defaults.adapter = async (config) => {
+        resourceCalls++;
+        const err = new Error("Request failed with status code 401");
+        err.response = { status: 401, data: { message: "Unauthorized" } };
+        err.config = config;
+        throw err;
+      };
+
+      let failed = false;
+      try {
+        await client.get("/search");
+      } catch (err) {
+        failed = true;
+        assert.strictEqual(err.response?.status, 401);
+      }
+      assert.strictEqual(failed, true, "Should reject on persistent 401");
+      assert.strictEqual(resourceCalls, 2, "Must not retry more than once");
+    } finally {
+      axios.post = originalPost;
+    }
+  });
+
+  // 56. Missing Credentials and Malformed Token Fail Safely
+  await asyncTest("56. COA ERP Auth - Missing credentials and malformed responses fail safely", async () => {
+    const service = new CoaApiServiceImpl.constructor();
+    service.username = "";
+    service.password = "";
+
+    let errorThrown = false;
+    try {
+      await service.getAccessToken();
+    } catch (err) {
+      errorThrown = true;
+      assert.ok(err.message && err.message.includes("Missing WhatsApp Basic Auth credentials"));
+    }
+    assert.strictEqual(errorThrown, true);
+
+    // Malformed token response
+    service.username = "user";
+    service.password = "pass";
+    service.invalidateToken();
+    const originalPost = axios.post;
+    axios.post = async function () {
+      return { data: { success: false, data: {} } };
+    };
+
+    let malformedError = false;
+    try {
+      await service.getAccessToken(true);
+    } catch (err) {
+      malformedError = true;
+      assert.ok(
+        err.message.toLowerCase().includes("missing accesstoken") ||
+        err.message.includes("missing accessToken"),
+        `Unexpected error message: ${err.message}`
+      );
+    }
+    assert.strictEqual(malformedError, true);
+    axios.post = originalPost;
+  });
+
+  // 57. Mocked Architect Lookup by Registration Number (Single Match with Bearer Auth)
+  await asyncTest("57. Mocked Architect Search - Lookup by Registration Number with Bearer Auth", async () => {
+    const service = new CoaApiServiceImpl.constructor();
+    service.username = "test-user";
+    service.password = "test-pass";
+
+    const originalPost = axios.post;
+    axios.post = async function (url) {
+      if (url.includes("/auth/token")) {
+        return { data: { success: true, data: { accessToken: "search_token_123", expiresIn: 900 } } };
+      }
+      return originalPost.apply(this, arguments);
+    };
+
+    try {
+      let interceptedAuth = null;
+      let interceptedParams = null;
+
+      const origGetAxiosClient = service.getAxiosClient.bind(service);
+      service.getAxiosClient = function () {
+        const client = origGetAxiosClient();
+        client.defaults.adapter = async (config) => {
+          interceptedAuth = config.headers?.Authorization;
+          interceptedParams = config.params;
+          return {
+            status: 200,
+            statusText: "OK",
+            headers: {},
+            config,
+            data: {
+              success: true,
+              data: [
+                {
+                  archRegNum: "CA/2021/12345",
+                  archFirstName: "AMIT",
+                  archLastName: "KUMAR",
+                  archStatus: "Active",
+                  archValidityUpTo: "31/December/2026",
+                  CorresspondanceAddr: "Sector 62",
+                  district: "Noida",
+                  pincode: "201301",
+                },
+              ],
+            },
+          };
+        };
+        return client;
+      };
+
+      const res = await service.searchArchitect({ regNumber: "CA/2021/12345" });
+      assert.strictEqual(res.found, true);
+      assert.strictEqual(res.count, 1);
+      assert.strictEqual(res.architects[0].regNumber, "CA/2021/12345");
+      assert.strictEqual(res.architects[0].name, "AMIT KUMAR");
+      assert.strictEqual(res.architects[0].status, "Active");
+      assert.strictEqual(res.architects[0].validityDisplay, "Annual payment valid till 31/12/2026");
+      assert.strictEqual(interceptedAuth, "Bearer search_token_123");
+      assert.deepStrictEqual(interceptedParams, { reg_no: "CA/2021/12345" });
+    } finally {
+      axios.post = originalPost;
+    }
+  });
+
+  // 58. Mocked Architect Search by Name (Multiple Results)
+  await asyncTest("58. Mocked Architect Search - Search by Name (Multiple Results)", async () => {
+    const service = new CoaApiServiceImpl.constructor();
+    service.username = "test-user";
+    service.password = "test-pass";
+
+    const originalPost = axios.post;
+    axios.post = async function (url) {
+      if (url.includes("/auth/token")) {
+        return { data: { success: true, data: { accessToken: "search_token_456", expiresIn: 900 } } };
+      }
+      return originalPost.apply(this, arguments);
+    };
+
+    try {
+      const origGetAxiosClient = service.getAxiosClient.bind(service);
+      service.getAxiosClient = function () {
+        const client = origGetAxiosClient();
+        client.defaults.adapter = async (config) => {
+          return {
+            status: 200,
+            statusText: "OK",
+            headers: {},
+            config,
+            data: {
+              success: true,
+              data: [
+                {
+                  archRegNum: "CA/2020/11111",
+                  name: "Rahul Sharma",
+                  status: "Active",
+                  archValidityUpTo: "31/12/2025",
+                },
+                {
+                  archRegNum: "CA/2019/22222",
+                  name: "Rahul Verma",
+                  status: "Defaulter",
+                  archValidityUpTo: "31/12/2021",
+                },
+              ],
+            },
+          };
+        };
+        return client;
+      };
+
+      const res = await service.searchArchitect({ name: "Rahul" });
+      assert.strictEqual(res.found, true);
+      assert.strictEqual(res.count, 2);
+      assert.strictEqual(res.architects[0].name, "Rahul Sharma");
+      assert.strictEqual(res.architects[1].name, "Rahul Verma");
+      assert.strictEqual(res.architects[1].status, "Defaulter");
+    } finally {
+      axios.post = originalPost;
+    }
+  });
+
+  // 59. Mocked Architect Search - Record Not Found
+  await asyncTest("59. Mocked Architect Search - Record Not Found Handling", async () => {
+    const service = new CoaApiServiceImpl.constructor();
+    service.username = "test-user";
+    service.password = "test-pass";
+
+    const originalPost = axios.post;
+    axios.post = async function (url) {
+      if (url.includes("/auth/token")) {
+        return { data: { success: true, data: { accessToken: "search_token_789", expiresIn: 900 } } };
+      }
+      return originalPost.apply(this, arguments);
+    };
+
+    try {
+      const origGetAxiosClient = service.getAxiosClient.bind(service);
+      service.getAxiosClient = function () {
+        const client = origGetAxiosClient();
+        client.defaults.adapter = async (config) => {
+          return {
+            status: 200,
+            statusText: "OK",
+            headers: {},
+            config,
+            data: { success: true, data: [] },
+          };
+        };
+        return client;
+      };
+
+      const res = await service.searchArchitect({ regNumber: "CA/9999/99999" });
+      assert.strictEqual(res.found, false);
+      assert.strictEqual(res.architects.length, 0);
+      assert.ok(res.message.includes("No architect record found"));
+    } finally {
+      axios.post = originalPost;
+    }
+  });
+
+  // 60. Payment-Validity Fields Verification (Annual, One-Time, Endorsement Due)
+  test("60. Payment-Validity Fields - Format & Representation Verification", () => {
+    // 1. Annual Payment
+    const annual = coaApiService.normalizeArchitect({
+      archRegNum: "CA/2010/12345",
+      archName: "ANIL KAPOOR",
+      archStatus: "Active",
+      archValidityUpTo: "31/12/2027",
+    });
+    assert.strictEqual(annual.validityDisplay, "Annual payment valid till 31/12/2027");
+
+    // 2. One Time Payment (OTP)
+    const otp = coaApiService.normalizeArchitect({
+      archRegNum: "CA/2015/67890",
+      archName: "PRIYA SHARMA",
+      archStatus: "Active",
+      payment_type: "otp",
+      archValidityUpTo: "31/12/2040",
+    });
+    assert.strictEqual(otp.validityDisplay, "One time payment valid till 31/12/40");
+
+    // 3. Endorsement Due (Status or Validity)
+    const endorsement = coaApiService.normalizeArchitect({
+      archRegNum: "CA/2005/11223",
+      archName: "ROHIT MEHTA",
+      archStatus: "Active [ <span class=\"DataRed\">Endorsement Due</span> ]",
+      archValidityUpTo: "31/12/2023",
+    });
+    assert.strictEqual(endorsement.validityDisplay, "Endorsement due.");
+  });
+
+  // 61. Mocked API Errors - 500 and Timeout Handling Fail Safely
+  await asyncTest("61. Mocked Architect Search - Upstream 500 & Network Errors Fail Safely", async () => {
+    const service = new CoaApiServiceImpl.constructor();
+    service.username = "test-user";
+    service.password = "test-pass";
+
+    const originalPost = axios.post;
+    axios.post = async function (url) {
+      if (url.includes("/auth/token")) {
+        return { data: { success: true, data: { accessToken: "search_token_err", expiresIn: 900 } } };
+      }
+      return originalPost.apply(this, arguments);
+    };
+
+    try {
+      const origGetAxiosClient = service.getAxiosClient.bind(service);
+      service.getAxiosClient = function () {
+        const client = origGetAxiosClient();
+        client.defaults.adapter = async (config) => {
+          const err = new Error("Network timeout after 5000ms");
+          err.config = config;
+          throw err;
+        };
+        return client;
+      };
+
+      const res = await service.searchArchitect({ regNumber: "CA/2021/12345" });
+      assert.strictEqual(res.found, false);
+      assert.strictEqual(res.architects.length, 0);
+      assert.ok(res.message.includes("No architect record found"));
+    } finally {
+      axios.post = originalPost;
+    }
+  });
+
+  // 62. Button Click Routing - "Architect Status", "Search Architect", "Verify Architect" and IDs
+  test("62. Button Click Routing - 'Architect Status', 'architect_status', and aliases prompt for registration number", () => {
+    for (const title of ["Architect Status", "architect_status", "Search Architect", "search_architect", "Verify Architect", "verify_architect"]) {
+      const classification = queryRouterService.classifyQuery(title);
+      assert.strictEqual(
+        classification.type,
+        "PROMPT_SEARCH_ARCHITECT",
+        `Expected PROMPT_SEARCH_ARCHITECT for button title/id: "${title}"`
+      );
+    }
   });
 
   console.log("\n==================================================");

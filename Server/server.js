@@ -680,15 +680,39 @@ async function handleButtonClick(userNumber, buttonTitle, messageId = null, sess
       message: "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search.",
       state: "search_architect",
     },
+    "search_architect": {
+      message: "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search.",
+      state: "search_architect",
+    },
     "Verify Architect": {
       message: "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to verify.",
+      state: "search_architect",
+    },
+    "verify_architect": {
+      message: "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to verify.",
+      state: "search_architect",
+    },
+    "Architect Status": {
+      message: "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search.",
+      state: "search_architect",
+    },
+    "architect_status": {
+      message: "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search.",
       state: "search_architect",
     },
     "Dispatch Status": {
       message: "Enter Registered Mobile No. to check status.",
       state: "dispatch_status",
     },
+    "dispatch_status": {
+      message: "Enter Registered Mobile No. to check status.",
+      state: "dispatch_status",
+    },
     "Application Status": {
+      message: "Enter Application No. to check status.",
+      state: "application_status",
+    },
+    "application_status": {
       message: "Enter Application No. to check status.",
       state: "application_status",
     },
@@ -700,8 +724,17 @@ async function handleButtonClick(userNumber, buttonTitle, messageId = null, sess
     return;
   }
 
-  // Check department classification for custom buttons
+  // Check queryRouterService classification for custom or dynamic buttons
   const classification = queryRouterService.classifyQuery(title);
+  if (classification.type === "PROMPT_SEARCH_ARCHITECT") {
+    sendTextMessage(
+      userNumber,
+      "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search."
+    );
+    updateUserState(userNumber, { awaiting: "search_architect", attempts: 0, lastMessageId: messageId });
+    return;
+  }
+
   if (classification.type === "DEPARTMENT_QUERY" || classification.type === "FAQ") {
     sendTextMessage(userNumber, classification.response);
     resetUserState(userNumber, { lastMessageId: messageId });

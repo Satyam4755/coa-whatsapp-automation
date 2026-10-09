@@ -158,16 +158,17 @@ class QueryRouterService {
       };
     }
 
-    // 3. Standalone "Search Architect" / "Verify Architect" command
+    // 3. Standalone "Search Architect" / "Verify Architect" / "Architect Status" command or button ID
+    const normalizedCmd = lower.replace(/[_\-]+/g, " ").trim();
     if (
-      lower === "search architect" ||
-      lower === "verify architect" ||
-      lower === "find architect" ||
-      lower === "architect search" ||
-      lower === "architect verification" ||
-      lower === "verify" ||
-      lower === "search" ||
-      lower === "architect status"
+      normalizedCmd === "search architect" ||
+      normalizedCmd === "verify architect" ||
+      normalizedCmd === "find architect" ||
+      normalizedCmd === "architect search" ||
+      normalizedCmd === "architect verification" ||
+      normalizedCmd === "verify" ||
+      normalizedCmd === "search" ||
+      normalizedCmd === "architect status"
     ) {
       return {
         type: "PROMPT_SEARCH_ARCHITECT",
