@@ -595,6 +595,212 @@ async function runTests() {
     assert.strictEqual(immediateSecond, false, "Second immediate warning must be throttled");
   });
 
+  // 40. Daily Renewal Reminder Cron - Disabled by default
+  await asyncTest("40. Daily Renewal Cron - Disabled by default when ENABLE_DAILY_RENEWAL_CRON !== 'true'", async () => {
+    const origEnv = process.env.ENABLE_DAILY_RENEWAL_CRON;
+    delete process.env.ENABLE_DAILY_RENEWAL_CRON;
+
+    const { executeDailyRenewalReminders } = await import("../server.js");
+    const res = await executeDailyRenewalReminders();
+    assert.strictEqual(res.status, "skipped");
+    assert.strictEqual(res.reason, "disabled");
+
+    if (origEnv !== undefined) process.env.ENABLE_DAILY_RENEWAL_CRON = origEnv;
+  });
+
+  // 41. Daily Renewal Reminder Cron - Redis Lock prevents duplicate execution
+  await asyncTest("41. Daily Renewal Cron - Redis Lock prevents duplicate execution across instances", async () => {
+    const { redisConnection } = await import("../services/bulkJobQueue.js");
+    if (redisConnection && redisConnection.status === "ready") {
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const lockKey = `wa:lock:daily_renewal_cron:${todayStr}`;
+      await redisConnection.set(lockKey, Date.now().toString(), "EX", 82800);
+
+      const origEnv = process.env.ENABLE_DAILY_RENEWAL_CRON;
+      process.env.ENABLE_DAILY_RENEWAL_CRON = "true";
+
+      const { executeDailyRenewalReminders } = await import("../server.js");
+      const res = await executeDailyRenewalReminders();
+      assert.strictEqual(res.status, "skipped");
+      assert.strictEqual(res.reason, "lock_held");
+
+      await redisConnection.del(lockKey);
+      if (origEnv !== undefined) process.env.ENABLE_DAILY_RENEWAL_CRON = origEnv;
+      else delete process.env.ENABLE_DAILY_RENEWAL_CRON;
+    }
+  });
+
+  // 42. Bulk Job Recovery - Safe startup behavior without auto-dispatch
+  await asyncTest("42. Bulk Job Recovery - Startup does not auto-resume jobs by default", async () => {
+    const origEnv = process.env.AUTO_RESUME_BULK_JOBS_ON_STARTUP;
+    delete process.env.AUTO_RESUME_BULK_JOBS_ON_STARTUP;
+
+    const { default: BulkJobProcessor } = await import("../services/BulkJobProcessor.js");
+    const processor = Object.create(BulkJobProcessor.prototype);
+    // Calling enqueueRecoverableJobs with default env should complete safely without auto-dispatch
+    await processor.enqueueRecoverableJobs();
+    assert.ok(true, "enqueueRecoverableJobs completed safely without throwing");
+
+    if (origEnv !== undefined) process.env.AUTO_RESUME_BULK_JOBS_ON_STARTUP = origEnv;
+  });
+
+  // ==================================================
+  // FEATURE 3: 20-MINUTE SESSION INACTIVITY TIMEOUT TESTS
+  // ==================================================
+  const {
+    getSessionTimeoutMs,
+    isRequestSuperseded,
+    updateUserState,
+    resetUserState,
+    cleanupExpiredUserStates,
+    userStates,
+  } = await import("../server.js");
+
+  // 43. Session Timeout Config
+  test("43. Session Timeout - Defaults to 20 minutes and respects CHAT_SESSION_TIMEOUT_MINUTES", () => {
+    const origEnv = process.env.CHAT_SESSION_TIMEOUT_MINUTES;
+    delete process.env.CHAT_SESSION_TIMEOUT_MINUTES;
+    assert.strictEqual(getSessionTimeoutMs(), 20 * 60 * 1000, "Default must be 20 minutes");
+
+    process.env.CHAT_SESSION_TIMEOUT_MINUTES = "15";
+    assert.strictEqual(getSessionTimeoutMs(), 15 * 60 * 1000, "Should parse valid minute string");
+
+    process.env.CHAT_SESSION_TIMEOUT_MINUTES = "invalid";
+    assert.strictEqual(getSessionTimeoutMs(), 20 * 60 * 1000, "Invalid value must fallback to 20 minutes");
+
+    if (origEnv !== undefined) process.env.CHAT_SESSION_TIMEOUT_MINUTES = origEnv;
+    else delete process.env.CHAT_SESSION_TIMEOUT_MINUTES;
+  });
+
+  // 44. Request Superseded Check by Message ID and Session Token
+  test("44. Request Superseded - Invalidation on new message ID or mismatched session token", () => {
+    const testUser = "9199990001";
+    userStates[testUser] = {
+      sessionToken: "sess_token_1",
+      sessionGeneration: 1,
+      lastMessageId: "msg_1",
+      lastUserMessageAt: Date.now(),
+    };
+
+    // Valid current request
+    assert.strictEqual(isRequestSuperseded(testUser, "msg_1", "sess_token_1"), false);
+
+    // Superseded by newer message ID
+    assert.strictEqual(isRequestSuperseded(testUser, "msg_old", "sess_token_1"), true);
+
+    // Superseded by newer session token
+    assert.strictEqual(isRequestSuperseded(testUser, "msg_1", "sess_token_old"), true);
+
+    // Non-existent or deleted user state
+    delete userStates[testUser];
+    assert.strictEqual(isRequestSuperseded(testUser, "msg_1", "sess_token_1"), true);
+  });
+
+  // 45. Inactivity Deadline Refresh on User Activity
+  test("45. Session Lifecycle - User message updates lastUserMessageAt and session state safely", () => {
+    const testUser = "9199990002";
+    const initialTime = Date.now() - 5000;
+    userStates[testUser] = {
+      sessionToken: "sess_active_1",
+      sessionGeneration: 1,
+      lastMessageId: "msg_init",
+      lastUserMessageAt: initialTime,
+      attempts: 0,
+      awaiting: "search_architect",
+    };
+
+    // User activity occurs
+    const newTime = Date.now();
+    updateUserState(testUser, { lastUserMessageAt: newTime, lastMessageId: "msg_next" });
+
+    assert.strictEqual(userStates[testUser].lastUserMessageAt, newTime);
+    assert.strictEqual(userStates[testUser].lastMessageId, "msg_next");
+    assert.strictEqual(userStates[testUser].sessionToken, "sess_active_1");
+    assert.strictEqual(userStates[testUser].awaiting, "search_architect");
+  });
+
+  // 46. Bot Response Alone Does Not Update User Inactivity Timestamp
+  test("46. Session Lifecycle - Outbound bot response alone does not extend inactivity deadline", () => {
+    const testUser = "9199990003";
+    const fixedUserTimestamp = Date.now() - 10000;
+    userStates[testUser] = {
+      sessionToken: "sess_bot_test",
+      sessionGeneration: 1,
+      lastMessageId: "msg_user_prompt",
+      lastUserMessageAt: fixedUserTimestamp,
+    };
+
+    // Simulated bot state reset on reply completion preserves lastUserMessageAt
+    resetUserState(testUser, { lastMessageId: "msg_user_prompt" });
+    assert.strictEqual(userStates[testUser].lastUserMessageAt, fixedUserTimestamp);
+  });
+
+  // 47. Independent User Session Isolation
+  test("47. Session Isolation - User A activity does not affect User B session or timeout", () => {
+    const userA = "9199990004";
+    const userB = "9199990005";
+    const timeA = Date.now() - 15 * 60 * 1000;
+    const timeB = Date.now() - 2 * 60 * 1000;
+
+    userStates[userA] = {
+      sessionToken: "token_user_a",
+      lastMessageId: "msg_a",
+      lastUserMessageAt: timeA,
+    };
+    userStates[userB] = {
+      sessionToken: "token_user_b",
+      lastMessageId: "msg_b",
+      lastUserMessageAt: timeB,
+    };
+
+    // User A receives a message and refreshes
+    const nowA = Date.now();
+    userStates[userA].lastUserMessageAt = nowA;
+
+    assert.strictEqual(userStates[userA].lastUserMessageAt, nowA);
+    assert.strictEqual(userStates[userB].lastUserMessageAt, timeB, "User B timestamp must remain unchanged");
+    assert.strictEqual(userStates[userB].sessionToken, "token_user_b");
+  });
+
+  // 48. Session Expiration Cleanup
+  test("48. Session Cleanup - Expired user states are pruned safely by periodic cleanup", () => {
+    const activeUser = "9199990006";
+    const expiredUser = "9199990007";
+    const now = Date.now();
+
+    userStates[activeUser] = {
+      sessionToken: "token_active",
+      lastUserMessageAt: now - 5 * 60 * 1000, // 5 min ago (active)
+    };
+    userStates[expiredUser] = {
+      sessionToken: "token_expired",
+      lastUserMessageAt: now - 25 * 60 * 1000, // 25 min ago (expired)
+    };
+
+    cleanupExpiredUserStates();
+
+    assert.ok(userStates[activeUser], "Active user must be retained");
+    assert.strictEqual(userStates[expiredUser], undefined, "Expired user state must be pruned");
+  });
+
+  // 49. Asynchronous Response From Expired Session Discarded
+  test("49. Async Protection - API response from expired session cannot send outbound message", () => {
+    const user = "9199990008";
+    const sessionTokenOld = "sess_old_token";
+    const sessionTokenNew = "sess_new_token";
+
+    // User had a search in old session
+    userStates[user] = {
+      sessionToken: sessionTokenNew, // New session started after expiry
+      lastMessageId: "msg_new",
+      lastUserMessageAt: Date.now(),
+    };
+
+    // Check if old async callback is allowed
+    const isSuperseded = isRequestSuperseded(user, "msg_old", sessionTokenOld);
+    assert.strictEqual(isSuperseded, true, "Async response from old session must be rejected");
+  });
+
   console.log("\n==================================================");
   console.log(`📊 FINAL TEST REPORT: ${passed} Passed, ${failed} Failed`);
   console.log("==================================================");

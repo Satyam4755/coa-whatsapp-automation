@@ -97,12 +97,55 @@ async function runE2ETests() {
     sendMessage(userNumber, welcomeMessage, buttons);
   }
 
-  async function handleButtonClick(userNumber, buttonTitle, messageId = null) {
-    const title = (buttonTitle || "").trim();
-    if (messageId) {
-      if (!userStates[userNumber]) userStates[userNumber] = {};
-      userStates[userNumber].lastMessageId = messageId;
+  function getSessionTimeoutMs() {
+    return 20 * 60 * 1000;
+  }
+
+  function isRequestSuperseded(userNumber, messageId, sessionToken) {
+    const state = userStates[userNumber];
+    if (!state) return true;
+    if (sessionToken && state.sessionToken && state.sessionToken !== sessionToken) return true;
+    if (messageId && state.lastMessageId && state.lastMessageId !== messageId) return true;
+    return false;
+  }
+
+  function updateUserState(userNumber, updates = {}) {
+    if (!userStates[userNumber]) {
+      const now = Date.now();
+      userStates[userNumber] = {
+        sessionToken: `sess_${now}_${Math.random().toString(36).substring(2, 9)}`,
+        sessionGeneration: 1,
+        lastUserMessageAt: now,
+        lastMessageId: null,
+        attempts: 0,
+        awaiting: null,
+      };
     }
+    Object.assign(userStates[userNumber], updates);
+    return userStates[userNumber];
+  }
+
+  function resetUserState(userNumber, updates = {}) {
+    const existing = userStates[userNumber];
+    const now = Date.now();
+    const sessionToken = existing?.sessionToken || `sess_${now}_${Math.random().toString(36).substring(2, 9)}`;
+    const sessionGeneration = existing?.sessionGeneration || 1;
+    const lastUserMessageAt = existing?.lastUserMessageAt || now;
+    userStates[userNumber] = {
+      sessionToken,
+      sessionGeneration,
+      lastUserMessageAt,
+      lastMessageId: updates.lastMessageId !== undefined ? updates.lastMessageId : (existing?.lastMessageId || null),
+      attempts: 0,
+      awaiting: null,
+      ...updates,
+    };
+    return userStates[userNumber];
+  }
+
+  async function handleButtonClick(userNumber, buttonTitle, messageId = null, sessionToken = null) {
+    const title = (buttonTitle || "").trim();
+    const currentSessionToken = sessionToken || userStates[userNumber]?.sessionToken;
 
     const responses = {
       "Search Architect": {
@@ -125,21 +168,22 @@ async function runE2ETests() {
 
     if (responses[title]) {
       sendTextMessage(userNumber, responses[title].message);
-      userStates[userNumber] = { awaiting: responses[title].state, attempts: 0, lastMessageId: messageId };
+      updateUserState(userNumber, { awaiting: responses[title].state, attempts: 0, lastMessageId: messageId });
       return;
     }
 
     const classification = queryRouterService.classifyQuery(title);
     if (classification.type === "DEPARTMENT_QUERY" || classification.type === "FAQ") {
       sendTextMessage(userNumber, classification.response);
-      userStates[userNumber] = { lastMessageId: messageId };
+      resetUserState(userNumber, { lastMessageId: messageId });
     } else {
-      userStates[userNumber] = { attempts: 0, lastMessageId: messageId };
+      resetUserState(userNumber, { attempts: 0, lastMessageId: messageId });
       sendWelcomeMessage(userNumber);
     }
   }
 
-  async function handleArchitectSearchFlow(userNumber, searchQuery, messageId = null) {
+  async function handleArchitectSearchFlow(userNumber, searchQuery, messageId = null, sessionToken = null) {
+    const currentSessionToken = sessionToken || userStates[userNumber]?.sessionToken;
     try {
       const term = (searchQuery || "").trim();
       if (!term) {
@@ -147,18 +191,14 @@ async function runE2ETests() {
           userNumber,
           "🏛️ *Search Architect / Verify Architect*\n\nPlease enter an Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search."
         );
-        userStates[userNumber] = { awaiting: "search_architect", attempts: 0, lastMessageId: messageId };
+        updateUserState(userNumber, { awaiting: "search_architect", attempts: 0, lastMessageId: messageId });
         return;
       }
 
       const searchResult = await coaApiService.searchArchitect({ query: term });
 
       // Stale in-flight check
-      if (
-        messageId &&
-        userStates[userNumber]?.lastMessageId &&
-        userStates[userNumber].lastMessageId !== messageId
-      ) {
+      if (isRequestSuperseded(userNumber, messageId, currentSessionToken)) {
         return; // Discard stale result
       }
 
@@ -167,7 +207,7 @@ async function runE2ETests() {
           userNumber,
           `🏛️ *Council of Architecture — Search Result*\n\nNo architect record found matching "${term}".\n\nPlease check the Registration Number (format: CA/YYYY/XXXXX) or Name and try again.\n\n_Type "menu" to return to the main menu._`
         );
-        userStates[userNumber] = { lastMessageId: messageId };
+        resetUserState(userNumber, { lastMessageId: messageId });
         return;
       }
 
@@ -179,7 +219,7 @@ async function runE2ETests() {
         msg += `${arch.validityDisplay || (arch.validity ? `Annual payment valid till ${arch.validity}` : "Endorsement due.")}`;
 
         sendTextMessage(userNumber, msg);
-        userStates[userNumber] = { lastMessageId: messageId };
+        resetUserState(userNumber, { lastMessageId: messageId });
         return;
       }
 
@@ -192,39 +232,45 @@ async function runE2ETests() {
       msg += `\n_Type "menu" to return to the main menu._`;
 
       sendTextMessage(userNumber, msg);
-      userStates[userNumber] = { awaiting: "search_architect", lastMessageId: messageId };
+      updateUserState(userNumber, { awaiting: "search_architect", lastMessageId: messageId });
     } catch (err) {
       console.error("Error in handleArchitectSearchFlow:", err);
+      if (isRequestSuperseded(userNumber, messageId, currentSessionToken)) return;
       sendTextMessage(
         userNumber,
         "An unexpected error occurred while searching for architect records. Please try again later.\n\n_Type \"menu\" to return to the main menu._"
       );
-      userStates[userNumber] = { lastMessageId: messageId };
+      resetUserState(userNumber, { lastMessageId: messageId });
     }
   }
 
-  async function handleApplicationStatus(userNumber, applicationNumber) {
+  async function handleApplicationStatus(userNumber, applicationNumber, messageId = null, sessionToken = null) {
+    const currentSessionToken = sessionToken || userStates[userNumber]?.sessionToken;
     try {
-      if (!userStates[userNumber]) userStates[userNumber] = {};
-      if (!userStates[userNumber].attempts) userStates[userNumber].attempts = 0;
-      userStates[userNumber].applicationNumber = applicationNumber.toUpperCase();
+      updateUserState(userNumber, { applicationNumber: (applicationNumber || "").toUpperCase() });
 
       const appNumRegex = /^(?=.*\d)[a-zA-Z\d]{6,}$/i;
       if (!appNumRegex.test(applicationNumber)) {
-        userStates[userNumber].attempts += 1;
-        if (userStates[userNumber].attempts >= 3) {
+        if (isRequestSuperseded(userNumber, messageId, currentSessionToken)) {
+          return;
+        }
+
+        const attempts = (userStates[userNumber]?.attempts || 0) + 1;
+        updateUserState(userNumber, { attempts });
+        if (attempts >= 3) {
           sendTextMessage(userNumber, "Maximum attempts reached. Please try again later.");
-          userStates[userNumber] = {};
+          resetUserState(userNumber, { lastMessageId: messageId });
           return sendWelcomeMessage(userNumber);
         }
         sendTextMessage(
           userNumber,
           `Please enter a valid application number (minimum 6 characters, must contain numbers).`
         );
+        updateUserState(userNumber, { awaiting: "application_status", lastMessageId: messageId });
         return;
       }
 
-      userStates[userNumber].attempts = 0;
+      updateUserState(userNumber, { attempts: 0 });
       const applicationAPIURL = `https://coa.gov.in/staging/AllApplicantDataAPI.php?application_no=${applicationNumber}`;
       let applicantData = null;
       try {
@@ -236,61 +282,84 @@ async function runE2ETests() {
         // Staging fallback
       }
 
+      // Check if conversation was superseded while request was in-flight
+      if (isRequestSuperseded(userNumber, messageId, currentSessionToken)) {
+        return;
+      }
+
       if (!applicantData) {
         sendTextMessage(
           userNumber,
           `No application found with Application No. ${applicationNumber}. Please try again.`
         );
-        userStates[userNumber] = {};
+        resetUserState(userNumber, { lastMessageId: messageId });
         return;
       }
 
       const status = applicantData?.appStatus || "In Process";
       const responseMessage = `The status for Application No. ${applicationNumber} is ${status}.`;
       sendTextMessage(userNumber, responseMessage);
-      userStates[userNumber] = {};
+      resetUserState(userNumber, { lastMessageId: messageId });
     } catch (error) {
       console.error("Error checking application status:", error);
+      if (isRequestSuperseded(userNumber, messageId, currentSessionToken)) {
+        return;
+      }
       sendTextMessage(
         userNumber,
         "Something went wrong while checking application status. Please try again."
       );
-      userStates[userNumber] = {};
+      resetUserState(userNumber, { lastMessageId: messageId });
     }
   }
 
-  async function handleDispatchStatus(userNumber, mobileNumber) {
+  async function handleDispatchStatus(userNumber, mobileNumber, messageId = null, sessionToken = null) {
+    const currentSessionToken = sessionToken || userStates[userNumber]?.sessionToken;
     try {
-      if (!userStates[userNumber]) userStates[userNumber] = {};
-      if (!userStates[userNumber].attempts) userStates[userNumber].attempts = 0;
-      userStates[userNumber].mobileNumber = mobileNumber;
+      updateUserState(userNumber, { mobileNumber });
 
       const mobileRegex = /^\d{10}$/;
       if (!mobileRegex.test(mobileNumber)) {
-        userStates[userNumber].attempts += 1;
-        if (userStates[userNumber].attempts >= 3) {
+        if (isRequestSuperseded(userNumber, messageId, currentSessionToken)) {
+          return;
+        }
+
+        const attempts = (userStates[userNumber]?.attempts || 0) + 1;
+        updateUserState(userNumber, { attempts });
+        if (attempts >= 3) {
           sendTextMessage(userNumber, "Maximum attempts reached. Please try again later.");
-          userStates[userNumber] = {};
+          resetUserState(userNumber, { lastMessageId: messageId });
           return sendWelcomeMessage(userNumber);
         }
         sendTextMessage(userNumber, `Please enter a valid 10-digit mobile number (e.g., 9876543210).`);
+        updateUserState(userNumber, { awaiting: "dispatch_status", lastMessageId: messageId });
         return;
       }
 
-      userStates[userNumber].attempts = 0;
+      updateUserState(userNumber, { attempts: 0 });
+
+      // Check if superseded
+      if (isRequestSuperseded(userNumber, messageId, currentSessionToken)) {
+        return;
+      }
+
       sendTextMessage(
         userNumber,
         `Dear Architect,\n\nThe following documents have not been dispatched yet. Kindly wait for a few days.`
       );
-      userStates[userNumber] = {};
+      resetUserState(userNumber, { lastMessageId: messageId });
     } catch (error) {
       console.error("Error checking dispatch status:", error);
+      if (isRequestSuperseded(userNumber, messageId, currentSessionToken)) {
+        return;
+      }
       sendTextMessage(userNumber, "Error checking dispatch status. Please try again.");
-      userStates[userNumber] = {};
+      resetUserState(userNumber, { lastMessageId: messageId });
     }
   }
 
-  async function handleTextMessage(userNumber, rawUserMessage, messageId = null) {
+  async function handleTextMessage(userNumber, rawUserMessage, messageId = null, sessionToken = null) {
+    const currentSessionToken = sessionToken || userStates[userNumber]?.sessionToken;
     const userMessage = (rawUserMessage || "").trim();
     const lower = userMessage.toLowerCase();
     const userState = userStates[userNumber] || {};
@@ -304,15 +373,15 @@ async function runE2ETests() {
       (/^(?:hi+|hello+|hey+|namaste)\b/i.test(lower) && lower.length <= 15);
 
     if (isGreetingOrMenu) {
-      userStates[userNumber] = { attempts: 0, lastMessageId: messageId };
+      resetUserState(userNumber, { attempts: 0, lastMessageId: messageId });
       return sendWelcomeMessage(userNumber);
     }
 
     // 2. Direct Registration Number Recognition
     const regNoMatch = userMessage.match(/\b(CA\/\d{2,4}\/\d{3,7})\b/i);
     if (regNoMatch) {
-      userStates[userNumber] = { lastMessageId: messageId };
-      return handleArchitectSearchFlow(userNumber, regNoMatch[1].toUpperCase(), messageId);
+      resetUserState(userNumber, { lastMessageId: messageId });
+      return handleArchitectSearchFlow(userNumber, regNoMatch[1].toUpperCase(), messageId, currentSessionToken);
     }
 
     // 3. Active Awaiting States
@@ -323,13 +392,13 @@ async function runE2ETests() {
         earlyClassification.type === "DEPARTMENT_QUERY" ||
         earlyClassification.type === "PROMPT_SEARCH_ARCHITECT"
       ) {
-        userStates[userNumber] = { lastMessageId: messageId };
+        resetUserState(userNumber, { lastMessageId: messageId });
         if (earlyClassification.type === "PROMPT_SEARCH_ARCHITECT") {
           sendTextMessage(
             userNumber,
             "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search."
           );
-          userStates[userNumber] = { awaiting: "search_architect", attempts: 0, lastMessageId: messageId };
+          updateUserState(userNumber, { awaiting: "search_architect", attempts: 0, lastMessageId: messageId });
           return;
         }
         sendTextMessage(userNumber, earlyClassification.response);
@@ -339,16 +408,16 @@ async function runE2ETests() {
       switch (awaiting) {
         case "search_architect":
         case "architect_status":
-          await handleArchitectSearchFlow(userNumber, userMessage, messageId);
+          await handleArchitectSearchFlow(userNumber, userMessage, messageId, currentSessionToken);
           return;
         case "dispatch_status":
-          await handleDispatchStatus(userNumber, userMessage);
+          await handleDispatchStatus(userNumber, userMessage, messageId, currentSessionToken);
           return;
         case "application_status":
-          await handleApplicationStatus(userNumber, userMessage);
+          await handleApplicationStatus(userNumber, userMessage, messageId, currentSessionToken);
           return;
         default:
-          userStates[userNumber] = { attempts: 0, lastMessageId: messageId };
+          resetUserState(userNumber, { attempts: 0, lastMessageId: messageId });
           return sendWelcomeMessage(userNumber);
       }
     }
@@ -358,7 +427,7 @@ async function runE2ETests() {
 
     switch (classification.type) {
       case "SEARCH_ARCHITECT":
-        await handleArchitectSearchFlow(userNumber, classification.query, messageId);
+        await handleArchitectSearchFlow(userNumber, classification.query, messageId, currentSessionToken);
         break;
 
       case "PROMPT_SEARCH_ARCHITECT":
@@ -366,30 +435,30 @@ async function runE2ETests() {
           userNumber,
           "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search."
         );
-        userStates[userNumber] = { awaiting: "search_architect", attempts: 0, lastMessageId: messageId };
+        updateUserState(userNumber, { awaiting: "search_architect", attempts: 0, lastMessageId: messageId });
         break;
 
       case "FAQ":
         sendTextMessage(userNumber, classification.response);
-        userStates[userNumber] = { lastMessageId: messageId };
+        resetUserState(userNumber, { lastMessageId: messageId });
         break;
 
       case "DEPARTMENT_QUERY":
         sendTextMessage(userNumber, classification.response);
-        userStates[userNumber] = { lastMessageId: messageId };
+        resetUserState(userNumber, { lastMessageId: messageId });
         break;
 
       case "MENU":
-        userStates[userNumber] = { attempts: 0, lastMessageId: messageId };
+        resetUserState(userNumber, { attempts: 0, lastMessageId: messageId });
         sendWelcomeMessage(userNumber);
         break;
 
       case "UNCLASSIFIED":
       default:
         if (/^\d{10}$/.test(userMessage)) {
-          await handleDispatchStatus(userNumber, userMessage);
+          await handleDispatchStatus(userNumber, userMessage, messageId, currentSessionToken);
         } else if (/^(?=.*\d)[a-zA-Z\d]{6,}$/i.test(userMessage) && !userMessage.includes(" ")) {
-          await handleApplicationStatus(userNumber, userMessage);
+          await handleApplicationStatus(userNumber, userMessage, messageId, currentSessionToken);
         } else {
           const guideMsg =
             `Welcome to the Council of Architecture Helpdesk.\n\n` +
@@ -402,7 +471,7 @@ async function runE2ETests() {
             `• 🎫 *Samarthaya Ticket:* Type "Ticket"\n\n` +
             `_Type "menu" to view main options or ask your question directly._`;
           sendTextMessage(userNumber, guideMsg);
-          userStates[userNumber] = { lastMessageId: messageId };
+          resetUserState(userNumber, { lastMessageId: messageId });
         }
         break;
     }
@@ -430,26 +499,60 @@ async function runE2ETests() {
 
       const userNumber = message.from;
       if (!userNumber) return 200;
-      if (!userStates[userNumber]) userStates[userNumber] = {};
-      userStates[userNumber].lastMessageId = messageId || `msg_${Date.now()}`;
+
+      const now = Date.now();
+      const sessionTimeoutMs = getSessionTimeoutMs();
+      const existingState = userStates[userNumber];
+      const isExpired = Boolean(
+        existingState?.lastUserMessageAt && (now - existingState.lastUserMessageAt >= sessionTimeoutMs)
+      );
+
+      let currentSessionToken;
+      if (!existingState || isExpired) {
+        const nextGen = (existingState?.sessionGeneration || 0) + 1;
+        currentSessionToken = `sess_${now}_${Math.random().toString(36).substring(2, 9)}`;
+        userStates[userNumber] = {
+          sessionToken: currentSessionToken,
+          sessionGeneration: nextGen,
+          lastUserMessageAt: now,
+          lastMessageId: messageId || `msg_${now}`,
+          attempts: 0,
+          awaiting: null,
+        };
+      } else {
+        existingState.lastUserMessageAt = now;
+        existingState.lastMessageId = messageId || `msg_${now}`;
+        currentSessionToken = existingState.sessionToken || `sess_${now}_${Math.random().toString(36).substring(2, 9)}`;
+        existingState.sessionToken = currentSessionToken;
+      }
+
+      if (isExpired) {
+        sendWelcomeMessage(userNumber);
+        return 200;
+      }
 
       if (message?.button) {
-        await handleButtonClick(userNumber, message.button.text, messageId);
+        await handleButtonClick(userNumber, message.button.text, messageId, currentSessionToken);
       } else if (message?.interactive?.button_reply) {
         await handleButtonClick(
           userNumber,
           message.interactive.button_reply.title || message.interactive.button_reply.id,
-          messageId
+          messageId,
+          currentSessionToken
         );
       } else if (message?.interactive?.list_reply) {
         await handleButtonClick(
           userNumber,
           message.interactive.list_reply.title || message.interactive.list_reply.id,
-          messageId
+          messageId,
+          currentSessionToken
         );
       } else if (message?.text?.body) {
-        await handleTextMessage(userNumber, message.text.body, messageId);
+        await handleTextMessage(userNumber, message.text.body, messageId, currentSessionToken);
       }
+    } else if (change?.value?.statuses) {
+      // Delivery status update — no conversational reply generated
+      return 200;
     }
     return 200;
   }
@@ -556,7 +659,7 @@ async function runE2ETests() {
     assert.ok(!resp.text.includes("Ar. Not Available"), "Must NOT display Ar. Not Available");
     assert.ok(resp.text.includes("Defaulter"), "Response must contain real status: Defaulter");
     assert.ok(resp.text.includes("31/12/1976"), "Response must contain validity");
-    assert.strictEqual(userStates[TEST_USER].awaiting, undefined, "State must be cleared after single lookup");
+    assert.ok(!userStates[TEST_USER].awaiting, "State must be cleared after single lookup");
     console.log("  Step 3: 'CA/1975/00048' -> Real Architect details Ar. PRAKASH NARAYAN received (1 response)");
 
     // 4. Send "Hi" afterward
@@ -595,7 +698,7 @@ async function runE2ETests() {
     await simulateWebhookPost(createTextMessagePayload(TEST_USER, "APP123456"));
     resp = assertSingleResponseAndGet(countBefore);
     assert.ok(!resp.text.toLowerCase().includes("otp"), "Must NOT contain OTP prompt");
-    assert.strictEqual(userStates[TEST_USER].awaiting, undefined, "State must be cleared");
+    assert.ok(!userStates[TEST_USER].awaiting, "State must be cleared");
     console.log("  Step 2: Enter Application No -> Status returned with NO OTP (1 response)");
 
     // 4. Send "Hi" afterward
@@ -633,7 +736,7 @@ async function runE2ETests() {
     await simulateWebhookPost(createTextMessagePayload(TEST_USER, "9876543210"));
     resp = assertSingleResponseAndGet(countBefore);
     assert.ok(!resp.text.toLowerCase().includes("otp"), "Must NOT contain OTP prompt");
-    assert.strictEqual(userStates[TEST_USER].awaiting, undefined, "State must be cleared");
+    assert.ok(!userStates[TEST_USER].awaiting, "State must be cleared");
     console.log("  Step 2: Enter Mobile No -> Dispatch response returned with NO OTP (1 response)");
 
     // 4. Send "Hi" afterward
@@ -822,6 +925,217 @@ async function runE2ETests() {
     passedTests++;
   } catch (e) {
     console.error("❌ TEST 8 FAILED:", e.message, "\n");
+  }
+
+  console.log("==================================================");
+  console.log("TEST 9: Stale Application Status Response Discarded");
+  console.log("==================================================");
+  totalTests++;
+  try {
+    const staleMsgId = "wamid.STALE_APP_STATUS_MSG_001";
+    const newerMsgId = "wamid.NEWER_APP_INTERIM_MSG_002";
+
+    // User triggers application status check with message ID
+    userStates[TEST_USER] = { lastMessageId: staleMsgId, awaiting: "application_status" };
+
+    // Before slow response finishes, user sends "Hi"
+    let countBefore = outgoingMessages.length;
+    await simulateWebhookPost(createTextMessagePayload(TEST_USER, "Hi", newerMsgId));
+    let resp = assertSingleResponseAndGet(countBefore);
+    assert.ok(resp.template === "coa_welcome_menu" || (resp.text && resp.text.includes("Welcome to the Council of Architecture")));
+    console.log("  Interim message: 'Hi' -> Welcome menu response delivered (1 response)");
+
+    // Slow application status query completes for older message
+    countBefore = outgoingMessages.length;
+    await handleApplicationStatus(TEST_USER, "APP12345", staleMsgId);
+    const postStaleMessages = outgoingMessages.slice(countBefore);
+    assert.strictEqual(
+      postStaleMessages.length,
+      0,
+      "Stale application status query must be discarded when a newer message has arrived"
+    );
+    console.log("  Stale application status: Ignored and discarded -> 0 unwanted messages sent");
+
+    console.log("✅ TEST 9 PASSED\n");
+    passedTests++;
+  } catch (e) {
+    console.error("❌ TEST 9 FAILED:", e.message, "\n");
+  }
+
+  console.log("==================================================");
+  console.log("TEST 10: Stale Dispatch Status Response Discarded");
+  console.log("==================================================");
+  totalTests++;
+  try {
+    const staleMsgId = "wamid.STALE_DISPATCH_MSG_001";
+    const newerMsgId = "wamid.NEWER_DISPATCH_MSG_002";
+
+    // User triggers dispatch status check with message ID
+    userStates[TEST_USER] = { lastMessageId: staleMsgId, awaiting: "dispatch_status" };
+
+    // Before slow response finishes, user sends "Hi"
+    let countBefore = outgoingMessages.length;
+    await simulateWebhookPost(createTextMessagePayload(TEST_USER, "Hi", newerMsgId));
+    let resp = assertSingleResponseAndGet(countBefore);
+    assert.ok(resp.template === "coa_welcome_menu" || (resp.text && resp.text.includes("Welcome to the Council of Architecture")));
+    console.log("  Interim message: 'Hi' -> Welcome menu response delivered (1 response)");
+
+    // Slow dispatch status query completes for older message
+    countBefore = outgoingMessages.length;
+    await handleDispatchStatus(TEST_USER, "9876543210", staleMsgId);
+    const postStaleMessages = outgoingMessages.slice(countBefore);
+    assert.strictEqual(
+      postStaleMessages.length,
+      0,
+      "Stale dispatch status query must be discarded when a newer message has arrived"
+    );
+    console.log("  Stale dispatch status: Ignored and discarded -> 0 unwanted messages sent");
+
+    console.log("✅ TEST 10 PASSED\n");
+    passedTests++;
+  } catch (e) {
+    console.error("❌ TEST 10 FAILED:", e.message, "\n");
+  }
+
+  console.log("==================================================");
+  console.log("TEST 11: Invalidated State Error Protection");
+  console.log("==================================================");
+  totalTests++;
+  try {
+    const staleMsgId = "wamid.STALE_ERROR_MSG_001";
+    const newerMsgId = "wamid.NEWER_ERROR_MSG_002";
+
+    userStates[TEST_USER] = { lastMessageId: newerMsgId };
+
+    // When an error happens in an invalidated request, no error message should be sent to the user
+    let countBefore = outgoingMessages.length;
+    await handleApplicationStatus(TEST_USER, "INVALID_APP", staleMsgId);
+    let postMessages = outgoingMessages.slice(countBefore);
+    assert.strictEqual(postMessages.length, 0, "No error message sent for superseded application status");
+
+    countBefore = outgoingMessages.length;
+    await handleDispatchStatus(TEST_USER, "12345", staleMsgId);
+    postMessages = outgoingMessages.slice(countBefore);
+    assert.strictEqual(postMessages.length, 0, "No error message sent for superseded dispatch status");
+
+    console.log("  Invalidated request errors: Safely suppressed without spamming user");
+    console.log("✅ TEST 11 PASSED\n");
+    passedTests++;
+  } catch (e) {
+    console.error("❌ TEST 11 FAILED:", e.message, "\n");
+  }
+
+  console.log("==================================================");
+  console.log("TEST 12: Delivery-Status Webhooks Do Not Trigger Bot Replies");
+  console.log("==================================================");
+  totalTests++;
+  try {
+    const statusPayload = {
+      object: "whatsapp_business_account",
+      entry: [
+        {
+          id: "123456",
+          changes: [
+            {
+              field: "messages",
+              value: {
+                messaging_product: "whatsapp",
+                statuses: [
+                  {
+                    id: "wamid.OUT_123456789",
+                    status: "delivered",
+                    timestamp: `${Math.floor(Date.now() / 1000)}`,
+                    recipient_id: TEST_USER,
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    const countBefore = outgoingMessages.length;
+    const httpStatus = await simulateWebhookPost(statusPayload);
+    assert.strictEqual(httpStatus, 200);
+    const postMessages = outgoingMessages.slice(countBefore);
+    assert.strictEqual(postMessages.length, 0, "Delivery status updates must produce 0 conversational replies");
+
+    console.log("  Delivery status update: Ignored without sending conversational reply");
+    console.log("✅ TEST 12 PASSED\n");
+    passedTests++;
+  } catch (e) {
+    console.error("❌ TEST 12 FAILED:", e.message, "\n");
+  }
+
+  console.log("==================================================");
+  console.log("TEST 13: 20-Minute Conversation Inactivity Timeout Reset");
+  console.log("==================================================");
+  totalTests++;
+  try {
+    // 1. User clicks "Search Architect"
+    let countBefore = outgoingMessages.length;
+    await simulateWebhookPost(createButtonReplyPayload(TEST_USER, "Search Architect"));
+    let resp = assertSingleResponseAndGet(countBefore);
+    assert.ok(resp.text.includes("Search Architect / Verify Architect"));
+    assert.strictEqual(userStates[TEST_USER].awaiting, "search_architect");
+
+    // 2. Simulate 21 minutes of user inactivity (timeout is 20 minutes)
+    const twentyOneMinAgo = Date.now() - 21 * 60 * 1000;
+    userStates[TEST_USER].lastUserMessageAt = twentyOneMinAgo;
+    const oldSessionToken = userStates[TEST_USER].sessionToken;
+
+    // 3. User sends a message after 21 minutes
+    countBefore = outgoingMessages.length;
+    await simulateWebhookPost(createTextMessagePayload(TEST_USER, "CA/1975/00048"));
+    resp = assertSingleResponseAndGet(countBefore);
+
+    // Expired session must start fresh and deliver welcome menu, NOT search result
+    assert.ok(
+      resp.template === "coa_welcome_menu" || (resp.text && resp.text.includes("Welcome to the Council of Architecture")),
+      "Expired session must return Welcome Menu rather than continuing expired search state"
+    );
+    assert.notStrictEqual(userStates[TEST_USER].sessionToken, oldSessionToken, "Session token must be refreshed");
+    assert.strictEqual(userStates[TEST_USER].awaiting, null, "Expired awaiting state must be cleared");
+
+    console.log("  20+ min inactivity: Old state invalidated -> Fresh Welcome Menu sent (1 response)");
+    console.log("✅ TEST 13 PASSED\n");
+    passedTests++;
+  } catch (e) {
+    console.error("❌ TEST 13 FAILED:", e.message, "\n");
+  }
+
+  console.log("==================================================");
+  console.log("TEST 14: User Activity Within 20-Minute Window Continues Flow");
+  console.log("==================================================");
+  totalTests++;
+  try {
+    // 1. User clicks "Search Architect"
+    let countBefore = outgoingMessages.length;
+    await simulateWebhookPost(createButtonReplyPayload(TEST_USER, "Search Architect"));
+    let resp = assertSingleResponseAndGet(countBefore);
+    assert.ok(resp.text.includes("Search Architect / Verify Architect"));
+    assert.strictEqual(userStates[TEST_USER].awaiting, "search_architect");
+
+    // 2. Simulate 10 minutes pass (within 20-minute window)
+    const tenMinAgo = Date.now() - 10 * 60 * 1000;
+    userStates[TEST_USER].lastUserMessageAt = tenMinAgo;
+    const currentSessionToken = userStates[TEST_USER].sessionToken;
+
+    // 3. User sends registration number within timeout window
+    countBefore = outgoingMessages.length;
+    await simulateWebhookPost(createTextMessagePayload(TEST_USER, "CA/1975/00048"));
+    resp = assertSingleResponseAndGet(countBefore);
+
+    // Active session successfully processes the search
+    assert.ok(resp.text.includes("PRAKASH NARAYAN"), "Active session must execute search and return architect info");
+    assert.strictEqual(userStates[TEST_USER].sessionToken, currentSessionToken, "Session token must be preserved");
+
+    console.log("  Activity within 20 min: Flow continues successfully -> Architect record returned");
+    console.log("✅ TEST 14 PASSED\n");
+    passedTests++;
+  } catch (e) {
+    console.error("❌ TEST 14 FAILED:", e.message, "\n");
   }
 
   console.log("================================================================================");

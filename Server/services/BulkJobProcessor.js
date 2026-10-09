@@ -66,14 +66,63 @@ class BulkJobProcessor {
   }
 
   async enqueueRecoverableJobs() {
-    const jobs = await BulkMessageJob.find({
+    const autoResume = process.env.AUTO_RESUME_BULK_JOBS_ON_STARTUP === "true";
+
+    if (!autoResume) {
+      // Stale jobs left in "processing" across server restart are paused to preserve state and history
+      const activeJobs = await BulkMessageJob.find({
+        status: "processing",
+      });
+
+      if (activeJobs.length > 0) {
+        console.log(
+          `[BulkJobProcessor] Found ${activeJobs.length} job(s) left in 'processing' across server restart. Marking as 'paused' to prevent unsolicited message dispatch without explicit authorization.`
+        );
+        for (const job of activeJobs) {
+          job.status = "paused";
+          job.updatedAt = new Date();
+          await job.save();
+          console.log(`[BulkJobProcessor] Job ${job.jobId} marked as 'paused' on boot.`);
+        }
+      } else {
+        console.log(
+          "[BulkJobProcessor] Startup check complete: Auto-resume of bulk jobs is disabled by default (AUTO_RESUME_BULK_JOBS_ON_STARTUP !== 'true')."
+        );
+      }
+      return;
+    }
+
+    const maxAgeHours = Number(process.env.BULK_JOB_RESUME_MAX_AGE_HOURS || 24);
+    const cutoff = new Date(Date.now() - maxAgeHours * 60 * 60 * 1000);
+
+    const validJobs = await BulkMessageJob.find({
       status: { $in: ["pending", "processing"] },
-    }).select("jobId");
+      createdAt: { $gte: cutoff },
+    }).select("jobId status createdAt");
 
-    await Promise.all(jobs.map((job) => enqueueBulkMessageJob(job.jobId)));
+    for (const job of validJobs) {
+      try {
+        await enqueueBulkMessageJob(job.jobId);
+        console.log(
+          `[BulkJobProcessor] Re-enqueued recoverable job ${job.jobId} (status: ${job.status}, created: ${job.createdAt})`
+        );
+      } catch (err) {
+        console.error(`[BulkJobProcessor] Failed to re-enqueue job ${job.jobId}:`, err.message);
+      }
+    }
 
-    if (jobs.length) {
-      console.log(`Re-enqueued ${jobs.length} recoverable bulk jobs`);
+    const staleJobs = await BulkMessageJob.find({
+      status: { $in: ["pending", "processing"] },
+      createdAt: { $lt: cutoff },
+    });
+
+    for (const job of staleJobs) {
+      job.status = "paused";
+      job.updatedAt = new Date();
+      await job.save();
+      console.log(
+        `[BulkJobProcessor] Stale job ${job.jobId} older than ${maxAgeHours}h marked as 'paused'.`
+      );
     }
   }
 

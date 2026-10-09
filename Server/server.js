@@ -254,7 +254,73 @@ const sendCronTextMessage = async (recipient, message, validityDate, calendarYea
   }
 };
 
-const userStates = {};
+export const userStates = {};
+
+export function getSessionTimeoutMs() {
+  const envVal = process.env.CHAT_SESSION_TIMEOUT_MINUTES;
+  const minutes = Number(envVal);
+  if (Number.isFinite(minutes) && minutes > 0) {
+    return minutes * 60 * 1000;
+  }
+  return 20 * 60 * 1000; // Default: 20 minutes
+}
+
+export function isRequestSuperseded(userNumber, messageId, sessionToken) {
+  const state = userStates[userNumber];
+  if (!state) return true;
+  if (sessionToken && state.sessionToken && state.sessionToken !== sessionToken) return true;
+  if (messageId && state.lastMessageId && state.lastMessageId !== messageId) return true;
+  return false;
+}
+
+export function updateUserState(userNumber, updates = {}) {
+  if (!userStates[userNumber]) {
+    const now = Date.now();
+    userStates[userNumber] = {
+      sessionToken: `sess_${now}_${Math.random().toString(36).substring(2, 9)}`,
+      sessionGeneration: 1,
+      lastUserMessageAt: now,
+      lastMessageId: null,
+      attempts: 0,
+      awaiting: null,
+    };
+  }
+  Object.assign(userStates[userNumber], updates);
+  return userStates[userNumber];
+}
+
+export function resetUserState(userNumber, updates = {}) {
+  const existing = userStates[userNumber];
+  const now = Date.now();
+  const sessionToken = existing?.sessionToken || `sess_${now}_${Math.random().toString(36).substring(2, 9)}`;
+  const sessionGeneration = existing?.sessionGeneration || 1;
+  const lastUserMessageAt = existing?.lastUserMessageAt || now;
+  userStates[userNumber] = {
+    sessionToken,
+    sessionGeneration,
+    lastUserMessageAt,
+    lastMessageId: updates.lastMessageId !== undefined ? updates.lastMessageId : (existing?.lastMessageId || null),
+    attempts: 0,
+    awaiting: null,
+    ...updates,
+  };
+  return userStates[userNumber];
+}
+
+export function cleanupExpiredUserStates() {
+  const now = Date.now();
+  const timeoutMs = getSessionTimeoutMs();
+  for (const [userNumber, state] of Object.entries(userStates)) {
+    if (state?.lastUserMessageAt && now - state.lastUserMessageAt >= timeoutMs) {
+      delete userStates[userNumber];
+    }
+  }
+}
+
+const sessionCleanupInterval = setInterval(cleanupExpiredUserStates, 5 * 60 * 1000);
+if (sessionCleanupInterval && typeof sessionCleanupInterval.unref === "function") {
+  sessionCleanupInterval.unref();
+}
 
 const httpsAgent = new https.Agent({
   rejectUnauthorized: false,
@@ -310,87 +376,131 @@ Kindly ignore the above information in case you have already made the payment.`;
 }
 
 
-cron.schedule("0 10 * * *", async () => {
+let isRenewalCronRunning = false;
 
-const cronAPIURL = process.env.NODE_ENV === "production" ? `https://coa.gov.in/AllArchitectDataAPI.php`:`https://coa.gov.in/staging/AllArchitectDataAPI.php`;
-
-
-  const response = await axios.get(
-    cronAPIURL,
-    { httpsAgent }
-  );
-  const rawData = response.data;
-
-  const architects = rawData.split("}{").map((item, index, arr) => {
-    if (index === 0) return JSON.parse(item + "}");
-    if (index === arr.length - 1) return JSON.parse("{" + item);
-    return JSON.parse("{" + item + "}");
-  });
-
-
-  function parseDate(dateStr) {
-    if (!dateStr) return null;
-
-    try {
-      const [day, monthName, year] = dateStr.split("/");
-      const dayNumber = parseInt(day, 10);
-      const yearNumber = parseInt(year, 10);
-      const monthNumber = new Date(
-        Date.parse(monthName + " 1, 1970")
-      ).getMonth(); // get month index
-      return new Date(yearNumber, monthNumber, dayNumber);
-    } catch (error) {
-      console.error("Error parsing date:", dateStr, error);
-      return null;
-    }
+export async function executeDailyRenewalReminders() {
+  const isEnabled = process.env.ENABLE_DAILY_RENEWAL_CRON === "true";
+  if (!isEnabled) {
+    console.log("[Renewal Cron] Daily renewal reminder cron is DISABLED (ENABLE_DAILY_RENEWAL_CRON !== 'true'). Skipping execution.");
+    return { status: "skipped", reason: "disabled" };
   }
 
-  function getRenewalInfo(validityDate) {
-    if (!validityDate) return { calendarYear: null, wef: null };
-
-    const wefDate = new Date(validityDate);
-    wefDate.setDate(wefDate.getDate() + 1);
-    const calendarYear = wefDate.getFullYear();
-
-    return {
-      calendarYear,
-      wef: wefDate.toLocaleDateString("en-GB"),
-    };
+  if (isRenewalCronRunning) {
+    console.warn("[Renewal Cron] Overlap detected: Job is already running in this process. Skipping.");
+    return { status: "skipped", reason: "already_running" };
   }
 
-  const targetDate = new Date();
-  targetDate.setDate(targetDate.getDate() + 15);
-  targetDate.setHours(0, 0, 0, 0);
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const lockKey = `wa:lock:daily_renewal_cron:${todayStr}`;
 
-  const filteredData = architects
-    .map((item) => {
-      const validityDate = parseDate(item.archValidityUpTo);
-
-      if (!validityDate) return null;
-
-      if (
-        validityDate.getFullYear() === targetDate.getFullYear() &&
-        validityDate.getMonth() === targetDate.getMonth() &&
-        validityDate.getDate() === targetDate.getDate()
-      ) {
-        const { calendarYear, wef } = getRenewalInfo(validityDate);
-
-        return {
-          ...item,
-          validityDate: validityDate.toLocaleDateString("en-GB"),
-          calendarYear,
-          wef,
-        };
+  try {
+    if (redisConnection && redisConnection.status === "ready") {
+      const lockResult = await redisConnection.set(lockKey, Date.now().toString(), "EX", 82800, "NX");
+      if (lockResult === null) {
+        console.log(`[Renewal Cron] Skipped: another instance already acquired the lock for ${todayStr}.`);
+        return { status: "skipped", reason: "lock_held" };
       }
-      return null;
-    })
-    .filter(Boolean);
+    }
 
-  if (filteredData.length > 0) {
-    scheduledTask(filteredData);
-  } else {
-    console.log("No data matches the criteria.");
+    isRenewalCronRunning = true;
+    console.log(`[Renewal Cron] Starting daily renewal reminder execution for ${todayStr}...`);
+
+    const cronAPIURL = process.env.NODE_ENV === "production" ? `https://coa.gov.in/AllArchitectDataAPI.php` : `https://coa.gov.in/staging/AllArchitectDataAPI.php`;
+
+    const response = await axios.get(
+      cronAPIURL,
+      { httpsAgent }
+    );
+    const rawData = response.data;
+
+    if (!rawData || typeof rawData !== "string") {
+      console.log("[Renewal Cron] No valid architect data received from API.");
+      return { status: "success", count: 0 };
+    }
+
+    const architects = rawData.split("}{").map((item, index, arr) => {
+      if (index === 0) return JSON.parse(item + "}");
+      if (index === arr.length - 1) return JSON.parse("{" + item);
+      return JSON.parse("{" + item + "}");
+    });
+
+    function parseDate(dateStr) {
+      if (!dateStr) return null;
+
+      try {
+        const [day, monthName, year] = dateStr.split("/");
+        const dayNumber = parseInt(day, 10);
+        const yearNumber = parseInt(year, 10);
+        const monthNumber = new Date(
+          Date.parse(monthName + " 1, 1970")
+        ).getMonth();
+        return new Date(yearNumber, monthNumber, dayNumber);
+      } catch (error) {
+        console.error("[Renewal Cron] Error parsing date:", dateStr, error.message);
+        return null;
+      }
+    }
+
+    function getRenewalInfo(validityDate) {
+      if (!validityDate) return { calendarYear: null, wef: null };
+
+      const wefDate = new Date(validityDate);
+      wefDate.setDate(wefDate.getDate() + 1);
+      const calendarYear = wefDate.getFullYear();
+
+      return {
+        calendarYear,
+        wef: wefDate.toLocaleDateString("en-GB"),
+      };
+    }
+
+    const targetDate = new Date();
+    targetDate.setDate(targetDate.getDate() + 15);
+    targetDate.setHours(0, 0, 0, 0);
+
+    const filteredData = architects
+      .map((item) => {
+        const validityDate = parseDate(item.archValidityUpTo);
+
+        if (!validityDate) return null;
+
+        if (
+          validityDate.getFullYear() === targetDate.getFullYear() &&
+          validityDate.getMonth() === targetDate.getMonth() &&
+          validityDate.getDate() === targetDate.getDate()
+        ) {
+          const { calendarYear, wef } = getRenewalInfo(validityDate);
+
+          return {
+            ...item,
+            validityDate: validityDate.toLocaleDateString("en-GB"),
+            calendarYear,
+            wef,
+          };
+        }
+        return null;
+      })
+      .filter(Boolean);
+
+    if (filteredData.length > 0) {
+      console.log(`[Renewal Cron] Found ${filteredData.length} architects with renewal due in 15 days.`);
+      scheduledTask(filteredData);
+    } else {
+      console.log("[Renewal Cron] No architects match the 15-day renewal reminder criteria.");
+    }
+
+    console.log(`[Renewal Cron] Successfully completed daily renewal check for ${todayStr}.`);
+    return { status: "success", count: filteredData.length };
+  } catch (err) {
+    console.error("[Renewal Cron] Error during daily renewal execution:", err.message);
+    return { status: "error", error: err.message };
+  } finally {
+    isRenewalCronRunning = false;
   }
+}
+
+cron.schedule("0 10 * * *", async () => {
+  await executeDailyRenewalReminders();
 });
 
 const processedMessageIds = new Map();
@@ -471,10 +581,31 @@ app.post("/webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
-      if (!userStates[userNumber]) {
-        userStates[userNumber] = {};
+      const now = Date.now();
+      const sessionTimeoutMs = getSessionTimeoutMs();
+      const existingState = userStates[userNumber];
+      const isExpired = Boolean(
+        existingState?.lastUserMessageAt && (now - existingState.lastUserMessageAt >= sessionTimeoutMs)
+      );
+
+      let currentSessionToken;
+      if (!existingState || isExpired) {
+        const nextGen = (existingState?.sessionGeneration || 0) + 1;
+        currentSessionToken = `sess_${now}_${Math.random().toString(36).substring(2, 9)}`;
+        userStates[userNumber] = {
+          sessionToken: currentSessionToken,
+          sessionGeneration: nextGen,
+          lastUserMessageAt: now,
+          lastMessageId: messageId || `msg_${now}`,
+          attempts: 0,
+          awaiting: null,
+        };
+      } else {
+        existingState.lastUserMessageAt = now;
+        existingState.lastMessageId = messageId || `msg_${now}`;
+        currentSessionToken = existingState.sessionToken || `sess_${now}_${Math.random().toString(36).substring(2, 9)}`;
+        existingState.sessionToken = currentSessionToken;
       }
-      userStates[userNumber].lastMessageId = messageId || `msg_${Date.now()}`;
 
       // Extract incoming message text for persistence
       let incomingText = "";
@@ -492,31 +623,41 @@ app.post("/webhook", async (req, res) => {
 
       // Persist USER message to MongoDB real-time in leads collection
       if (incomingText) {
-        conversationService
-          .logUserMessage({
+        try {
+          await conversationService.logUserMessage({
             userNumber,
             message: incomingText,
             messageId,
-          })
-          .catch((err) => console.error("Error logging user message:", err.message));
+          });
+        } catch (err) {
+          console.error("Error logging user message:", err.message);
+        }
+      }
+
+      // If previous session expired, discard old state and send welcome menu for this fresh interaction
+      if (isExpired) {
+        sendWelcomeMessage(userNumber);
+        return res.sendStatus(200);
       }
 
       if (message?.button) {
-        await handleButtonClick(userNumber, message.button.text, messageId);
+        await handleButtonClick(userNumber, message.button.text, messageId, currentSessionToken);
       } else if (message?.interactive?.button_reply) {
         await handleButtonClick(
           userNumber,
           message.interactive.button_reply.title || message.interactive.button_reply.id,
-          messageId
+          messageId,
+          currentSessionToken
         );
       } else if (message?.interactive?.list_reply) {
         await handleButtonClick(
           userNumber,
           message.interactive.list_reply.title || message.interactive.list_reply.id,
-          messageId
+          messageId,
+          currentSessionToken
         );
       } else if (message?.text?.body) {
-        await handleTextMessage(userNumber, message.text.body, messageId);
+        await handleTextMessage(userNumber, message.text.body, messageId, currentSessionToken);
       }
     } else if (change?.value?.statuses) {
       console.log("Status Update:", change.value.statuses[0]);
@@ -529,13 +670,10 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-async function handleButtonClick(userNumber, buttonTitle, messageId = null) {
+async function handleButtonClick(userNumber, buttonTitle, messageId = null, sessionToken = null) {
   console.log(`Button clicked by ${userNumber}: ${buttonTitle}`);
   const title = (buttonTitle || "").trim();
-  if (messageId) {
-    if (!userStates[userNumber]) userStates[userNumber] = {};
-    userStates[userNumber].lastMessageId = messageId;
-  }
+  const currentSessionToken = sessionToken || userStates[userNumber]?.sessionToken;
 
   const responses = {
     "Search Architect": {
@@ -558,7 +696,7 @@ async function handleButtonClick(userNumber, buttonTitle, messageId = null) {
 
   if (responses[title]) {
     sendTextMessage(userNumber, responses[title].message);
-    userStates[userNumber] = { awaiting: responses[title].state, attempts: 0, lastMessageId: messageId };
+    updateUserState(userNumber, { awaiting: responses[title].state, attempts: 0, lastMessageId: messageId });
     return;
   }
 
@@ -566,9 +704,9 @@ async function handleButtonClick(userNumber, buttonTitle, messageId = null) {
   const classification = queryRouterService.classifyQuery(title);
   if (classification.type === "DEPARTMENT_QUERY" || classification.type === "FAQ") {
     sendTextMessage(userNumber, classification.response);
-    userStates[userNumber] = { lastMessageId: messageId };
+    resetUserState(userNumber, { lastMessageId: messageId });
   } else {
-    userStates[userNumber] = { attempts: 0, lastMessageId: messageId };
+    resetUserState(userNumber, { attempts: 0, lastMessageId: messageId });
     sendWelcomeMessage(userNumber);
   }
 }
@@ -583,7 +721,8 @@ function sendWelcomeMessage(userNumber) {
   sendMessage(userNumber, welcomeMessage, buttons);
 }
 
-async function handleArchitectSearchFlow(userNumber, searchQuery, messageId = null) {
+async function handleArchitectSearchFlow(userNumber, searchQuery, messageId = null, sessionToken = null) {
+  const currentSessionToken = sessionToken || userStates[userNumber]?.sessionToken;
   try {
     const term = (searchQuery || "").trim();
     if (!term) {
@@ -591,20 +730,16 @@ async function handleArchitectSearchFlow(userNumber, searchQuery, messageId = nu
         userNumber,
         "🏛️ *Search Architect / Verify Architect*\n\nPlease enter an Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search."
       );
-      userStates[userNumber] = { awaiting: "search_architect", attempts: 0, lastMessageId: messageId };
+      updateUserState(userNumber, { awaiting: "search_architect", attempts: 0, lastMessageId: messageId });
       return;
     }
 
     const searchResult = await coaApiService.searchArchitect({ query: term });
 
     // Validate that the conversation has not moved on while this search was executing
-    if (
-      messageId &&
-      userStates[userNumber]?.lastMessageId &&
-      userStates[userNumber].lastMessageId !== messageId
-    ) {
+    if (isRequestSuperseded(userNumber, messageId, currentSessionToken)) {
       console.log(
-        `Discarding stale architect search response for ${userNumber} (msgId ${messageId} superseded by ${userStates[userNumber].lastMessageId})`
+        `Discarding stale architect search response for ${userNumber} (msgId ${messageId} superseded)`
       );
       return;
     }
@@ -614,7 +749,7 @@ async function handleArchitectSearchFlow(userNumber, searchQuery, messageId = nu
         userNumber,
         `🏛️ *Council of Architecture — Search Result*\n\nNo architect record found matching "${term}".\n\nPlease check the Registration Number (format: CA/YYYY/XXXXX) or Name and try again.\n\n_Type "menu" to return to the main menu._`
       );
-      userStates[userNumber] = { lastMessageId: messageId };
+      resetUserState(userNumber, { lastMessageId: messageId });
       return;
     }
 
@@ -626,7 +761,7 @@ async function handleArchitectSearchFlow(userNumber, searchQuery, messageId = nu
       msg += `${arch.validityDisplay || (arch.validity ? `Annual payment valid till ${arch.validity}` : "Endorsement due.")}`;
 
       sendTextMessage(userNumber, msg);
-      userStates[userNumber] = { lastMessageId: messageId };
+      resetUserState(userNumber, { lastMessageId: messageId });
       return;
     }
 
@@ -640,22 +775,29 @@ async function handleArchitectSearchFlow(userNumber, searchQuery, messageId = nu
     msg += `\n_Type "menu" to return to the main menu._`;
 
     sendTextMessage(userNumber, msg);
-    userStates[userNumber] = { awaiting: "search_architect", lastMessageId: messageId };
+    updateUserState(userNumber, { awaiting: "search_architect", lastMessageId: messageId });
   } catch (err) {
     console.error("Error in handleArchitectSearchFlow:", err);
+    if (isRequestSuperseded(userNumber, messageId, currentSessionToken)) {
+      console.log(
+        `Discarding error message for superseded architect search request ${userNumber}`
+      );
+      return;
+    }
     sendTextMessage(
       userNumber,
       "An unexpected error occurred while searching for architect records. Please try again later.\n\n_Type \"menu\" to return to the main menu._"
     );
-    userStates[userNumber] = { lastMessageId: messageId };
+    resetUserState(userNumber, { lastMessageId: messageId });
   }
 }
 
-async function handleArchitectStatus(userNumber, registrationNumber, messageId = null) {
-  return handleArchitectSearchFlow(userNumber, registrationNumber, messageId);
+async function handleArchitectStatus(userNumber, registrationNumber, messageId = null, sessionToken = null) {
+  return handleArchitectSearchFlow(userNumber, registrationNumber, messageId, sessionToken);
 }
 
-async function handleTextMessage(userNumber, rawUserMessage, messageId = null) {
+async function handleTextMessage(userNumber, rawUserMessage, messageId = null, sessionToken = null) {
+  const currentSessionToken = sessionToken || userStates[userNumber]?.sessionToken;
   const userMessage = (rawUserMessage || "").trim();
   const lower = userMessage.toLowerCase();
   const userState = userStates[userNumber] || {};
@@ -669,15 +811,15 @@ async function handleTextMessage(userNumber, rawUserMessage, messageId = null) {
     (/^(?:hi+|hello+|hey+|namaste)\b/i.test(lower) && lower.length <= 15);
 
   if (isGreetingOrMenu) {
-    userStates[userNumber] = { attempts: 0, lastMessageId: messageId };
+    resetUserState(userNumber, { attempts: 0, lastMessageId: messageId });
     return sendWelcomeMessage(userNumber);
   }
 
   // 2. Direct Registration Number Recognition (always prioritized)
   const regNoMatch = userMessage.match(/\b(CA\/\d{2,4}\/\d{3,7})\b/i);
   if (regNoMatch) {
-    userStates[userNumber] = { lastMessageId: messageId };
-    return handleArchitectSearchFlow(userNumber, regNoMatch[1].toUpperCase(), messageId);
+    resetUserState(userNumber, { lastMessageId: messageId });
+    return handleArchitectSearchFlow(userNumber, regNoMatch[1].toUpperCase(), messageId, currentSessionToken);
   }
 
   // 3. Active Awaiting States
@@ -689,13 +831,13 @@ async function handleTextMessage(userNumber, rawUserMessage, messageId = null) {
       earlyClassification.type === "DEPARTMENT_QUERY" ||
       earlyClassification.type === "PROMPT_SEARCH_ARCHITECT"
     ) {
-      userStates[userNumber] = { lastMessageId: messageId };
+      resetUserState(userNumber, { lastMessageId: messageId });
       if (earlyClassification.type === "PROMPT_SEARCH_ARCHITECT") {
         sendTextMessage(
           userNumber,
           "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search."
         );
-        userStates[userNumber] = { awaiting: "search_architect", attempts: 0, lastMessageId: messageId };
+        updateUserState(userNumber, { awaiting: "search_architect", attempts: 0, lastMessageId: messageId });
         return;
       }
       sendTextMessage(userNumber, earlyClassification.response);
@@ -705,16 +847,16 @@ async function handleTextMessage(userNumber, rawUserMessage, messageId = null) {
     switch (awaiting) {
       case "search_architect":
       case "architect_status":
-        await handleArchitectSearchFlow(userNumber, userMessage, messageId);
+        await handleArchitectSearchFlow(userNumber, userMessage, messageId, currentSessionToken);
         return;
       case "dispatch_status":
-        await handleDispatchStatus(userNumber, userMessage);
+        await handleDispatchStatus(userNumber, userMessage, messageId, currentSessionToken);
         return;
       case "application_status":
-        await handleApplicationStatus(userNumber, userMessage);
+        await handleApplicationStatus(userNumber, userMessage, messageId, currentSessionToken);
         return;
       default:
-        userStates[userNumber] = { attempts: 0, lastMessageId: messageId };
+        resetUserState(userNumber, { attempts: 0, lastMessageId: messageId });
         return sendWelcomeMessage(userNumber);
     }
   }
@@ -724,7 +866,7 @@ async function handleTextMessage(userNumber, rawUserMessage, messageId = null) {
 
   switch (classification.type) {
     case "SEARCH_ARCHITECT":
-      await handleArchitectSearchFlow(userNumber, classification.query, messageId);
+      await handleArchitectSearchFlow(userNumber, classification.query, messageId, currentSessionToken);
       break;
 
     case "PROMPT_SEARCH_ARCHITECT":
@@ -732,30 +874,30 @@ async function handleTextMessage(userNumber, rawUserMessage, messageId = null) {
         userNumber,
         "🏛️ *Search Architect / Verify Architect*\n\nPlease enter the Architect Registration Number (e.g., CA/2021/12345) or Architect Name to search."
       );
-      userStates[userNumber] = { awaiting: "search_architect", attempts: 0, lastMessageId: messageId };
+      updateUserState(userNumber, { awaiting: "search_architect", attempts: 0, lastMessageId: messageId });
       break;
 
     case "FAQ":
       sendTextMessage(userNumber, classification.response);
-      userStates[userNumber] = { lastMessageId: messageId };
+      resetUserState(userNumber, { lastMessageId: messageId });
       break;
 
     case "DEPARTMENT_QUERY":
       sendTextMessage(userNumber, classification.response);
-      userStates[userNumber] = { lastMessageId: messageId };
+      resetUserState(userNumber, { lastMessageId: messageId });
       break;
 
     case "MENU":
-      userStates[userNumber] = { attempts: 0, lastMessageId: messageId };
+      resetUserState(userNumber, { attempts: 0, lastMessageId: messageId });
       sendWelcomeMessage(userNumber);
       break;
 
     case "UNCLASSIFIED":
     default:
       if (/^\d{10}$/.test(userMessage)) {
-        await handleDispatchStatus(userNumber, userMessage);
+        await handleDispatchStatus(userNumber, userMessage, messageId, currentSessionToken);
       } else if (/^(?=.*\d)[a-zA-Z\d]{6,}$/i.test(userMessage) && !userMessage.includes(" ")) {
-        await handleApplicationStatus(userNumber, userMessage);
+        await handleApplicationStatus(userNumber, userMessage, messageId, currentSessionToken);
       } else {
         const guideMsg =
           `Welcome to the Council of Architecture Helpdesk.\n\n` +
@@ -768,30 +910,32 @@ async function handleTextMessage(userNumber, rawUserMessage, messageId = null) {
           `• 🎫 *Samarthaya Ticket:* Type "Ticket"\n\n` +
           `_Type "menu" to view main options or ask your question directly._`;
         sendTextMessage(userNumber, guideMsg);
-        userStates[userNumber] = { lastMessageId: messageId };
+        resetUserState(userNumber, { lastMessageId: messageId });
       }
       break;
   }
 }
 
-async function handleApplicationStatus(userNumber, applicationNumber) {
+async function handleApplicationStatus(userNumber, applicationNumber, messageId = null, sessionToken = null) {
+  const currentSessionToken = sessionToken || userStates[userNumber]?.sessionToken;
   try {
-    if (!userStates[userNumber].attempts) {
-      userStates[userNumber].attempts = 0;
-    }
-
-    userStates[userNumber].applicationNumber = applicationNumber.toUpperCase();
+    updateUserState(userNumber, { applicationNumber: (applicationNumber || "").toUpperCase() });
 
     const appNumRegex = /^(?=.*\d)[a-zA-Z\d]{6,}$/i;
     if (!appNumRegex.test(applicationNumber)) {
-      userStates[userNumber].attempts += 1;
+      if (isRequestSuperseded(userNumber, messageId, currentSessionToken)) {
+        return;
+      }
 
-      if (userStates[userNumber].attempts >= 3) {
+      const attempts = (userStates[userNumber]?.attempts || 0) + 1;
+      updateUserState(userNumber, { attempts });
+
+      if (attempts >= 3) {
         sendTextMessage(
           userNumber,
           "Maximum attempts reached. Please try again later."
         );
-        userStates[userNumber] = {};
+        resetUserState(userNumber, { lastMessageId: messageId });
         return sendWelcomeMessage(userNumber);
       }
 
@@ -799,10 +943,11 @@ async function handleApplicationStatus(userNumber, applicationNumber) {
         userNumber,
         `Please enter a valid application number (minimum 6 characters, must contain numbers).`
       );
+      updateUserState(userNumber, { awaiting: "application_status", lastMessageId: messageId });
       return;
     }
 
-    userStates[userNumber].attempts = 0;
+    updateUserState(userNumber, { attempts: 0 });
 
     const applicationAPIURL = process.env.NODE_ENV === "production" ? `https://coa.gov.in/AllApplicantDataAPI.php?application_no=${applicationNumber}`:`https://coa.gov.in/staging/AllApplicantDataAPI.php?application_no=${applicationNumber}`;
 
@@ -811,17 +956,26 @@ async function handleApplicationStatus(userNumber, applicationNumber) {
       { httpsAgent }
     );
 
+    // Validate that the conversation has not moved on while request was in flight
+    if (isRequestSuperseded(userNumber, messageId, currentSessionToken)) {
+      console.log(
+        `Discarding stale application status response for ${userNumber} (msgId ${messageId} superseded)`
+      );
+      return;
+    }
+
     const applicantData = response.data;
 
     if (!response.data || response.data.length === 0) {
-      userStates[userNumber].attempts += 1;
+      const attempts = (userStates[userNumber]?.attempts || 0) + 1;
+      updateUserState(userNumber, { attempts });
 
-      if (userStates[userNumber].attempts >= 3) {
+      if (attempts >= 3) {
         sendTextMessage(
           userNumber,
           "Maximum attempts reached. Please try again later."
         );
-        userStates[userNumber] = {};
+        resetUserState(userNumber, { lastMessageId: messageId });
         return sendWelcomeMessage(userNumber);
       }
 
@@ -829,41 +983,50 @@ async function handleApplicationStatus(userNumber, applicationNumber) {
         userNumber,
         `No application found with Application No. ${applicationNumber}. Please try again.`
       );
+      updateUserState(userNumber, { awaiting: "application_status", lastMessageId: messageId });
       return;
     }
 
     const status = applicantData?.appStatus || "Not Available";
     const responseMessage = `The status for Application No. ${applicationNumber} is ${status}.`;
     sendTextMessage(userNumber, responseMessage);
-    userStates[userNumber] = {};
+    resetUserState(userNumber, { lastMessageId: messageId });
   } catch (error) {
     console.error("Error checking application status:", error);
+    if (isRequestSuperseded(userNumber, messageId, currentSessionToken)) {
+      console.log(
+        `Discarding error message for superseded application status request ${userNumber}`
+      );
+      return;
+    }
     sendTextMessage(
       userNumber,
       "Something went wrong while checking application status. Please try again."
     );
-    userStates[userNumber] = {};
+    resetUserState(userNumber, { lastMessageId: messageId });
   }
 }
 
-async function handleDispatchStatus(userNumber, mobileNumber) {
+async function handleDispatchStatus(userNumber, mobileNumber, messageId = null, sessionToken = null) {
+  const currentSessionToken = sessionToken || userStates[userNumber]?.sessionToken;
   try {
-    if (!userStates[userNumber].attempts) {
-      userStates[userNumber].attempts = 0;
-    }
-
-    userStates[userNumber].mobileNumber = mobileNumber;
+    updateUserState(userNumber, { mobileNumber });
 
     const mobileRegex = /^\d{10}$/;
     if (!mobileRegex.test(mobileNumber)) {
-      userStates[userNumber].attempts += 1;
+      if (isRequestSuperseded(userNumber, messageId, currentSessionToken)) {
+        return;
+      }
 
-      if (userStates[userNumber].attempts >= 3) {
+      const attempts = (userStates[userNumber]?.attempts || 0) + 1;
+      updateUserState(userNumber, { attempts });
+
+      if (attempts >= 3) {
         sendTextMessage(
           userNumber,
           "Maximum attempts reached. Please try again later."
         );
-        userStates[userNumber] = {};
+        resetUserState(userNumber, { lastMessageId: messageId });
         return sendWelcomeMessage(userNumber);
       }
 
@@ -871,10 +1034,11 @@ async function handleDispatchStatus(userNumber, mobileNumber) {
         userNumber,
         `Please enter a valid 10-digit mobile number (e.g., 9876543210).`
       );
+      updateUserState(userNumber, { awaiting: "dispatch_status", lastMessageId: messageId });
       return;
     }
 
-    userStates[userNumber].attempts = 0;
+    updateUserState(userNumber, { attempts: 0 });
 
     const dispatchAPIURL = process.env.NODE_ENV === "production" ? `https://ecoa.in/api/letter-documents/${mobileNumber}`:`https://ecoa.in/ecoa_staging/public/api/letter-documents/${mobileNumber}`;
 
@@ -882,6 +1046,14 @@ async function handleDispatchStatus(userNumber, mobileNumber) {
       dispatchAPIURL,
       { httpsAgent }
     );
+
+    // Validate that the conversation has not moved on while request was in flight
+    if (isRequestSuperseded(userNumber, messageId, currentSessionToken)) {
+      console.log(
+        `Discarding stale dispatch status response for ${userNumber} (msgId ${messageId} superseded)`
+      );
+      return;
+    }
 
     if (
       !dispatchData.data?.data?.length ||
@@ -891,22 +1063,37 @@ async function handleDispatchStatus(userNumber, mobileNumber) {
         userNumber,
         `No dispatch found for the given mobile number ${mobileNumber}. Please try again.`
       );
-      return (userStates[userNumber] = {});
+      resetUserState(userNumber, { lastMessageId: messageId });
+      return;
     }
 
     const isDispatched = dispatchData.data.data.filter((item) => item?.barcode);
-    handleDispatchResponse(userNumber, isDispatched);
+    handleDispatchResponse(userNumber, isDispatched, messageId, currentSessionToken);
   } catch (error) {
     console.error("Error checking dispatch status:", error);
+    if (isRequestSuperseded(userNumber, messageId, currentSessionToken)) {
+      console.log(
+        `Discarding error message for superseded dispatch status request ${userNumber}`
+      );
+      return;
+    }
     sendTextMessage(
       userNumber,
       "Error checking dispatch status. Please try again."
     );
-    userStates[userNumber] = {};
+    resetUserState(userNumber, { lastMessageId: messageId });
   }
 }
 
-function handleDispatchResponse(userNumber, dispatchedItems) {
+function handleDispatchResponse(userNumber, dispatchedItems, messageId = null, sessionToken = null) {
+  const currentSessionToken = sessionToken || userStates[userNumber]?.sessionToken;
+  if (isRequestSuperseded(userNumber, messageId, currentSessionToken)) {
+    console.log(
+      `Discarding stale dispatch response for ${userNumber} (msgId ${messageId} superseded)`
+    );
+    return;
+  }
+
   if (!dispatchedItems || dispatchedItems.length === 0) {
     sendTextMessage(
       userNumber,
@@ -916,11 +1103,10 @@ function handleDispatchResponse(userNumber, dispatchedItems) {
     const lastItem = dispatchedItems[dispatchedItems.length - 1];
     const dispatchStatus = `The documents have been dispatched to your communication address on ${lastItem?.dispatched_date}. Consignment No. ${
       lastItem?.barcode
-    } . The same may be tracked on the ${process.env.COURIER_COMPANY_NAME} Courier website.
-`;
+    } . The same may be tracked on the ${process.env.COURIER_COMPANY_NAME} Courier website.\n`;
     sendTextMessage(userNumber, dispatchStatus);
   }
-  userStates[userNumber] = {};
+  resetUserState(userNumber, { lastMessageId: messageId });
 }
 
 app.get("/webhook", (req, res) => {
