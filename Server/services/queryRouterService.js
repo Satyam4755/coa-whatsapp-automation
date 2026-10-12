@@ -34,28 +34,30 @@ export const DEPARTMENT_DATA = {
     description: "NATA Exam Information, Scorecards & Admissions",
   },
   PGETA: {
-    name: "PGETA Department",
+    name: "PGETA (Post Graduate Entrance Test in Architecture)",
     category: "PGETA",
-    website: "https://coa.gov.in",
+    website: "https://www.pgeta.in",
     ticketSystem:
       "https://ecoa.in/samarthaya/public/requestQuery?lang=1&level=1&sublinkid=1317&lid=1189",
-    description: "Post Graduate Examination in Training & Architecture Enquiries",
+    description: "Post Graduate Entrance Test in Architecture Queries",
   },
   EDUCATION: {
-    name: "Education & Institution Department",
+    name: "Education / Academic Department",
     category: "Education",
-    website: "https://coa.gov.in",
+    email: "academic-coa@coa.gov.in",
+    phone: "011-49412100 (Ext. 205)",
+    website: "https://coa.gov.in/architectural_institutions.php",
     ticketSystem:
       "https://ecoa.in/samarthaya/public/requestQuery?lang=1&level=1&sublinkid=1317&lid=1189",
     description: "Architectural Institutions, Inspection, Minimum Standards & Approval",
   },
   GENERAL: {
-    name: "Other CoA Departments & Services",
+    name: "Other CoA Departments / Services",
     category: "Other CoA Services",
     website: "https://coa.gov.in",
     ticketSystem:
       "https://ecoa.in/samarthaya/public/requestQuery?lang=1&level=1&sublinkid=1317&lid=1189",
-    description: "Council Administrative Queries, Samarthaya Online Ticket System",
+    description: "Queries related to other departments or services of the Council of Architecture",
   },
 };
 
@@ -88,41 +90,34 @@ class QueryRouterService {
 
     if (deptKey === "NATA") {
       return (
-        `Dear Architect / Candidate,\n\n` +
-        `For queries related to NATA (National Aptitude Test in Architecture), please visit the official NATA website or the CoA portal:\n\n` +
-        `• Official NATA Website: https://www.nata.in\n` +
-        `• CoA Official Website: https://coa.gov.in\n` +
-        `• Ticket System: https://ecoa.in/samarthaya/public/requestQuery?lang=1&level=1&sublinkid=1317&lid=1189\n\n` +
-        `_Type "menu" to return to the main menu._`
+        `Dear User,\n` +
+        `For information and queries related to NATA (National Aptitude Test in Architecture), please visit the official website:\n` +
+        `https://www.nata.in`
       );
     }
 
     if (deptKey === "PGETA") {
       return (
-        `Dear Architect / Candidate,\n\n` +
-        `For queries related to PGETA (Post Graduate Examination in Training & Architecture), please visit the official CoA website or submit a query via the Ticket System:\n\n` +
-        `• Official Website: https://coa.gov.in\n` +
-        `• Ticket System: https://ecoa.in/samarthaya/public/requestQuery?lang=1&level=1&sublinkid=1317&lid=1189\n\n` +
-        `_Type "menu" to return to the main menu._`
+        `Dear User,\n` +
+        `For information and queries related to PGETA (Post Graduate Entrance Test in Architecture), please visit the official website:\n` +
+        `https://www.pgeta.in`
       );
     }
 
     if (deptKey === "EDUCATION") {
       return (
-        `Dear Architect / Institution,\n\n` +
-        `For queries related to Architecture Education & Institutions (Approval, Minimum Standards, Syllabus), please visit the official website or submit a query via the Ticket System:\n\n` +
-        `• Official Website: https://coa.gov.in\n` +
-        `• Ticket System: https://ecoa.in/samarthaya/public/requestQuery?lang=1&level=1&sublinkid=1317&lid=1189\n\n` +
-        `_Type "menu" to return to the main menu._`
+        `Dear User,\n` +
+        `Kindly email us your query at academic-coa@coa.gov.in or contact our Academic Department at 011-49412100 (Ext. 205).\n` +
+        `Feel free to reach out here in case of any further issues.\n` +
+        `For more details, please visit: https://coa.gov.in/architectural_institutions.php`
       );
     }
 
     return (
-      `Dear Architect / User,\n\n` +
-      `For queries related to other Council of Architecture departments and services, please submit your request through the Samarthaya Ticket System:\n\n` +
-      `• Online Ticket System: https://ecoa.in/samarthaya/public/requestQuery?lang=1&level=1&sublinkid=1317&lid=1189\n` +
-      `• Official Website: https://coa.gov.in\n\n` +
-      `_Type "menu" to return to the main menu._`
+      `Dear User,\n` +
+      `For queries related to other departments or services of the Council of Architecture, kindly submit your query through the official COA Query/Ticket System:\n` +
+      `https://ecoa.in/samarthaya/public/requestQuery?lang=1&level=1&sublinkid=1317&lid=1189\n` +
+      `Please select the relevant department or service while submitting your query.`
     );
   }
 
@@ -215,9 +210,26 @@ class QueryRouterService {
     }
 
     // 6. Department Keyword Classification
+
+    // Specific Academic Department / Architectural Institution queries
+    // Checks high-specificity institution and academic department terms first
+    const isAcademicInstitutionQuery =
+      lower.includes("academic department") ||
+      lower.includes("academic dept") ||
+      lower.includes("architectural institutions") ||
+      lower.includes("architectural institution") ||
+      lower.includes("architecture institution") ||
+      lower.includes("architecture institutions") ||
+      lower.includes("college approval") ||
+      lower.includes("minimum standards") ||
+      lower.includes("intake capacity") ||
+      lower.includes("syllabus");
+
     // NATA
     if (
-      lower.includes("nata") ||
+      /\bnata\b/i.test(lower) ||
+      lower.includes("national aptitude test in architecture") ||
+      lower.includes("national aptitude test") ||
       lower.includes("aptitude test") ||
       lower.includes("b.arch entrance") ||
       lower.includes("nata exam")
@@ -232,10 +244,13 @@ class QueryRouterService {
 
     // PGETA
     if (
-      lower.includes("pgeta") ||
+      /\bpgeta\b/i.test(lower) ||
+      lower.includes("post graduate entrance test in architecture") ||
+      lower.includes("post graduate entrance test") ||
       lower.includes("post graduate examination") ||
       lower.includes("m.arch entrance") ||
-      lower.includes("pg entrance")
+      lower.includes("pg entrance") ||
+      lower.includes("pgeta exam")
     ) {
       return {
         type: "DEPARTMENT_QUERY",
@@ -245,7 +260,17 @@ class QueryRouterService {
       };
     }
 
-    // Renewal
+    // Specific Academic Department / Institution queries
+    if (isAcademicInstitutionQuery) {
+      return {
+        type: "DEPARTMENT_QUERY",
+        department: "EDUCATION",
+        response: this.formatDepartmentResponse("EDUCATION"),
+        raw: text,
+      };
+    }
+
+    // Renewal (preserve priority over broad "department" and generic "academic")
     if (
       lower.includes("renewal") ||
       lower.includes("renew") ||
@@ -261,24 +286,7 @@ class QueryRouterService {
       };
     }
 
-    // Education
-    if (
-      lower.includes("education") ||
-      lower.includes("college approval") ||
-      lower.includes("architecture institution") ||
-      lower.includes("syllabus") ||
-      lower.includes("minimum standards") ||
-      lower.includes("intake capacity")
-    ) {
-      return {
-        type: "DEPARTMENT_QUERY",
-        department: "EDUCATION",
-        response: this.formatDepartmentResponse("EDUCATION"),
-        raw: text,
-      };
-    }
-
-    // Registration
+    // Registration (preserve priority over broad "department" and generic "academic")
     if (
       lower.includes("registration") ||
       lower.includes("register") ||
@@ -294,8 +302,27 @@ class QueryRouterService {
       };
     }
 
-    // Ticket / Grievance / Samarthaya / Contact / Office / Other Departments
+    // Education / Academic Department (education, academic, academics)
     if (
+      lower.includes("education") ||
+      /\bacademics?\b/i.test(lower)
+    ) {
+      return {
+        type: "DEPARTMENT_QUERY",
+        department: "EDUCATION",
+        response: this.formatDepartmentResponse("EDUCATION"),
+        raw: text,
+      };
+    }
+
+    // Ticket / Grievance / Samarthaya / Contact / Office / Other Departments & Services
+    if (
+      lower.includes("other department") ||
+      lower.includes("other departments") ||
+      lower.includes("other service") ||
+      lower.includes("other services") ||
+      lower.includes("another department") ||
+      lower.includes("another service") ||
       lower.includes("ticket") ||
       lower.includes("samarthaya") ||
       lower.includes("grievance") ||

@@ -102,39 +102,151 @@ async function runTests() {
     assert.ok(res.response.includes("https://coa.org.in/e-services/renewal-registration"));
   });
 
-  // 7. NATA Department Routing
-  test("7. Department Routing - NATA queries", () => {
-    const res = queryRouterService.classifyQuery("When will NATA results and admit card be released?");
-    assert.strictEqual(res.type, "DEPARTMENT_QUERY");
-    assert.strictEqual(res.department, "NATA");
-    assert.ok(res.response.includes("https://www.nata.in"));
-    assert.ok(res.response.includes("https://coa.gov.in"));
-    assert.ok(res.response.includes("https://ecoa.in/samarthaya/public/requestQuery"));
+  // 7. NATA Department Routing & Exact Response
+  test("7. Department Routing - NATA queries and exact response", () => {
+    const expectedNataResponse =
+      `Dear User,\n` +
+      `For information and queries related to NATA (National Aptitude Test in Architecture), please visit the official website:\n` +
+      `https://www.nata.in`;
+
+    const nataKeywords = [
+      "NATA",
+      "nata",
+      "National Aptitude Test in Architecture",
+      "national aptitude test",
+      "When will NATA results and admit card be released?",
+      "I have a query regarding aptitude test",
+      "b.arch entrance enquiry",
+      "nata exam 2026",
+    ];
+
+    for (const q of nataKeywords) {
+      const res = queryRouterService.classifyQuery(q);
+      assert.strictEqual(res.type, "DEPARTMENT_QUERY", `Expected DEPARTMENT_QUERY for "${q}"`);
+      assert.strictEqual(res.department, "NATA", `Expected NATA department for "${q}"`);
+      assert.strictEqual(res.response, expectedNataResponse, `Expected exact NATA response for "${q}"`);
+    }
   });
 
-  // 8. PGETA Department Routing
-  test("8. Department Routing - PGETA queries", () => {
-    const res = queryRouterService.classifyQuery("PGETA post graduate examination details");
-    assert.strictEqual(res.type, "DEPARTMENT_QUERY");
-    assert.strictEqual(res.department, "PGETA");
-    assert.ok(res.response.includes("https://coa.gov.in"));
-    assert.ok(res.response.includes("https://ecoa.in/samarthaya/public/requestQuery"));
+  // 8. PGETA Department Routing & Exact Response
+  test("8. Department Routing - PGETA queries and exact response", () => {
+    const expectedPgetaResponse =
+      `Dear User,\n` +
+      `For information and queries related to PGETA (Post Graduate Entrance Test in Architecture), please visit the official website:\n` +
+      `https://www.pgeta.in`;
+
+    const pgetaKeywords = [
+      "PGETA",
+      "pgeta",
+      "Post Graduate Entrance Test in Architecture",
+      "post graduate entrance test",
+      "PGETA post graduate examination details",
+      "m.arch entrance test",
+      "pg entrance details",
+      "pgeta exam date",
+    ];
+
+    for (const q of pgetaKeywords) {
+      const res = queryRouterService.classifyQuery(q);
+      assert.strictEqual(res.type, "DEPARTMENT_QUERY", `Expected DEPARTMENT_QUERY for "${q}"`);
+      assert.strictEqual(res.department, "PGETA", `Expected PGETA department for "${q}"`);
+      assert.strictEqual(res.response, expectedPgetaResponse, `Expected exact PGETA response for "${q}"`);
+    }
   });
 
-  // 9. Education Department Routing
-  test("9. Department Routing - Education department", () => {
-    const res = queryRouterService.classifyQuery("Education department college approval syllabus");
-    assert.strictEqual(res.type, "DEPARTMENT_QUERY");
-    assert.strictEqual(res.department, "EDUCATION");
-    assert.ok(res.response.includes("https://coa.gov.in"));
-    assert.ok(res.response.includes("https://ecoa.in/samarthaya/public/requestQuery"));
+  // 9. Education / Academic Department Routing & Exact Response
+  test("9. Department Routing - Education and Academic Department queries with exact response", () => {
+    const expectedEducationResponse =
+      `Dear User,\n` +
+      `Kindly email us your query at academic-coa@coa.gov.in or contact our Academic Department at 011-49412100 (Ext. 205).\n` +
+      `Feel free to reach out here in case of any further issues.\n` +
+      `For more details, please visit: https://coa.gov.in/architectural_institutions.php`;
+
+    const educationKeywords = [
+      "Education",
+      "education",
+      "academic department",
+      "Academic Department",
+      "academic dept",
+      "academic",
+      "academics",
+      "architectural institutions",
+      "Architectural Institutions",
+      "architectural institution",
+      "architecture institutions",
+      "college approval process",
+      "syllabus for architecture courses",
+      "minimum standards of architectural education",
+      "intake capacity guidelines",
+    ];
+
+    for (const q of educationKeywords) {
+      const res = queryRouterService.classifyQuery(q);
+      assert.strictEqual(res.type, "DEPARTMENT_QUERY", `Expected DEPARTMENT_QUERY for "${q}"`);
+      assert.strictEqual(res.department, "EDUCATION", `Expected EDUCATION department for "${q}"`);
+      assert.strictEqual(res.response, expectedEducationResponse, `Expected exact Education response for "${q}"`);
+    }
   });
 
-  // 10. General / Samarthaya Ticket Routing
-  test("10. Department Routing - Samarthaya Ticket / General grievance", () => {
-    const res = queryRouterService.classifyQuery("how to raise samarthaya grievance ticket");
-    assert.ok(res.type === "DEPARTMENT_QUERY" || res.type === "FAQ");
-    assert.ok(res.response.includes("https://ecoa.in/samarthaya/public/requestQuery"));
+  // 10. Other CoA Departments / Services Routing & Exact Response
+  test("10. Department Routing - Other CoA Departments / Services queries and exact response", () => {
+    const expectedOtherResponse =
+      `Dear User,\n` +
+      `For queries related to other departments or services of the Council of Architecture, kindly submit your query through the official COA Query/Ticket System:\n` +
+      `https://ecoa.in/samarthaya/public/requestQuery?lang=1&level=1&sublinkid=1317&lid=1189\n` +
+      `Please select the relevant department or service while submitting your query.`;
+
+    const otherKeywords = [
+      "other departments",
+      "Other Departments",
+      "other services",
+      "Other Services",
+      "other coa departments",
+      "other coa services",
+      "Other CoA Departments / Services",
+      "another department",
+      "another service",
+      "general services",
+      "general department",
+      "how to raise samarthaya grievance ticket",
+      "complaint to council",
+      "helpline number for council",
+    ];
+
+    for (const q of otherKeywords) {
+      const res = queryRouterService.classifyQuery(q);
+      assert.strictEqual(res.type, "DEPARTMENT_QUERY", `Expected DEPARTMENT_QUERY for "${q}"`);
+      assert.strictEqual(res.department, "GENERAL", `Expected GENERAL department for "${q}"`);
+      assert.strictEqual(res.response, expectedOtherResponse, `Expected exact Other CoA Services response for "${q}"`);
+    }
+  });
+
+  // 10b. Broad keyword priority preservation regression tests
+  test("10b. Priority Preservation - Broad keywords ('academic', 'department') do not override specific intents", () => {
+    // Registration Department must NOT be overridden by "department"
+    const regDept = queryRouterService.classifyQuery("Registration Department");
+    assert.strictEqual(regDept.department, "REGISTRATION");
+    assert.ok(regDept.response.includes("registration-coa@coa.gov.in"));
+
+    // Renewal Department must NOT be overridden by "department"
+    const renDept = queryRouterService.classifyQuery("Renewal Department");
+    assert.strictEqual(renDept.department, "RENEWAL");
+    assert.ok(renDept.response.includes("registration-renewal-coa@coa.gov.in"));
+
+    // Academic document with registration query must NOT be overridden by broad "academic"
+    const regAcademic = queryRouterService.classifyQuery("academic documents required for architect registration");
+    assert.strictEqual(regAcademic.department, "REGISTRATION");
+    assert.ok(regAcademic.response.includes("registration-coa@coa.gov.in"));
+
+    // Academic document with renewal query must NOT be overridden by broad "academic"
+    const renAcademic = queryRouterService.classifyQuery("renewal with academic qualification");
+    assert.strictEqual(renAcademic.department, "RENEWAL");
+    assert.ok(renAcademic.response.includes("registration-renewal-coa@coa.gov.in"));
+
+    // Search architect with 'Academic' in name must NOT be overridden
+    const searchArch = queryRouterService.classifyQuery("search architect Rajesh Academic");
+    assert.strictEqual(searchArch.type, "SEARCH_ARCHITECT");
+    assert.strictEqual(searchArch.query, "Rajesh Academic");
   });
 
   // 11. FAQ Matching - "How can I renew my registration?"

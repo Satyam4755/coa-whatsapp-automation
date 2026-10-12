@@ -792,10 +792,10 @@ async function runE2ETests() {
     const directQueries = [
       { text: "Registration", expected: ["registration-coa@coa.gov.in", "011-49412100", "register-architect"] },
       { text: "Renewal", expected: ["registration-renewal-coa@coa.gov.in", "+91 70429 39122", "renewal-registration"] },
-      { text: "NATA", expected: ["https://www.nata.in", "https://coa.gov.in"] },
-      { text: "PGETA", expected: ["https://coa.gov.in", "https://ecoa.in/samarthaya/public/requestQuery"] },
-      { text: "Education", expected: ["https://coa.gov.in", "https://ecoa.in/samarthaya/public/requestQuery"] },
-      { text: "Other CoA departments/services", expected: ["https://ecoa.in/samarthaya/public/requestQuery", "https://coa.gov.in"] },
+      { text: "NATA", expected: ["https://www.nata.in"] },
+      { text: "PGETA", expected: ["https://www.pgeta.in"] },
+      { text: "Education", expected: ["academic-coa@coa.gov.in", "011-49412100 (Ext. 205)", "https://coa.gov.in/architectural_institutions.php"] },
+      { text: "Other CoA departments/services", expected: ["https://ecoa.in/samarthaya/public/requestQuery"] },
     ];
 
     for (const q of directQueries) {
@@ -822,9 +822,9 @@ async function runE2ETests() {
     const naturalQueries = [
       { text: "How can I register?", expected: ["registration-coa@coa.gov.in", "register-architect"] },
       { text: "How can I renew my registration?", expected: ["Procedure", "registration-renewal-coa@coa.gov.in", "+91 70429 39122"] },
-      { text: "I have a NATA related query", expected: ["https://www.nata.in", "https://coa.gov.in"] },
-      { text: "I have a PGETA query", expected: ["https://coa.gov.in"] },
-      { text: "I have a question regarding education", expected: ["https://coa.gov.in"] },
+      { text: "I have a NATA related query", expected: ["https://www.nata.in"] },
+      { text: "I have a PGETA query", expected: ["https://www.pgeta.in"] },
+      { text: "I have a question regarding education", expected: ["academic-coa@coa.gov.in", "https://coa.gov.in/architectural_institutions.php"] },
       { text: "I have another CoA department query", expected: ["https://ecoa.in/samarthaya/public/requestQuery"] },
     ];
 
