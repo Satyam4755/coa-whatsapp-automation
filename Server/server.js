@@ -747,7 +747,7 @@ async function handleButtonClick(userNumber, buttonTitle, messageId = null, sess
 function sendWelcomeMessage(userNumber) {
   const welcomeMessage = `Welcome to the Council of Architecture. We are available 24/7 to answer your queries. You can enquire, provide feedback, and ask for support. Please select an option to continue.`;
   const buttons = [
-    { type: "text", text: "Search Architect" },
+    { type: "text", text: "Architect Status" },
     { type: "text", text: "Application Status" },
     { type: "text", text: "Dispatch Status" },
   ];
@@ -836,9 +836,9 @@ async function handleTextMessage(userNumber, rawUserMessage, messageId = null, s
   const userState = userStates[userNumber] || {};
   const awaiting = userState?.awaiting;
 
-  // 1. Menu and Greeting triggers (e.g., hi, hii, hello, hey, start, menu, etc.)
+  // 1. Menu and Greeting triggers (e.g., hi, hii, hello, hey, start, menu, dispatch, etc.)
   const isGreetingOrMenu =
-    /^(?:hi+|hello+|hey+|namaste|good\s*(?:morning|afternoon|evening)|start|menu|main\s*menu|options|help|home)$/i.test(
+    /^(?:hi+|hello+|hey+|namaste|good\s*(?:morning|afternoon|evening)|start|menu|main\s*menu|options|help|home|dispatch)$/i.test(
       lower
     ) ||
     (/^(?:hi+|hello+|hey+|namaste)\b/i.test(lower) && lower.length <= 15);
@@ -932,18 +932,8 @@ async function handleTextMessage(userNumber, rawUserMessage, messageId = null, s
       } else if (/^(?=.*\d)[a-zA-Z\d]{6,}$/i.test(userMessage) && !userMessage.includes(" ")) {
         await handleApplicationStatus(userNumber, userMessage, messageId, currentSessionToken);
       } else {
-        const guideMsg =
-          `Welcome to the Council of Architecture Helpdesk.\n\n` +
-          `How can we help you today?\n` +
-          `• 🔍 *Search Architect / Verify:* Type a Registration No. (e.g. CA/2021/12345) or Name\n` +
-          `• 🔄 *Renewal Enquiry:* Type "Renewal" or ask "How can I renew my registration?"\n` +
-          `• 📋 *Registration Enquiry:* Type "Registration"\n` +
-          `• 🎓 *NATA / PGETA:* Type "NATA" or "PGETA"\n` +
-          `• 🏫 *Education Department:* Type "Education"\n` +
-          `• 🎫 *Samarthaya Ticket:* Type "Ticket"\n\n` +
-          `_Type "menu" to view main options or ask your question directly._`;
-        sendTextMessage(userNumber, guideMsg);
-        resetUserState(userNumber, { lastMessageId: messageId });
+        resetUserState(userNumber, { attempts: 0, lastMessageId: messageId });
+        sendWelcomeMessage(userNumber);
       }
       break;
   }
