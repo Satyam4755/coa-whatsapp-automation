@@ -39,7 +39,7 @@ export const FAQ_DATA = [
       website: "https://coa.gov.in",
     },
     helpdesk: {
-      email: "registration-renewal-coa@coa.gov.in",
+      email: "renewal-coa@coa.gov.in",
       whatsappHelpdesk: "+91 70429 39122",
       phone: "011-49412100",
     },
@@ -61,7 +61,7 @@ export const FAQ_DATA = [
         `• Renewal Portal: https://coa.org.in/e-services/renewal-registration\n` +
         `• Samarthaya Ticket System: https://ecoa.in/samarthaya/public/requestQuery?lang=1&level=1&sublinkid=1317&lid=1189\n\n` +
         `📞 *Renewal Helpdesk:*\n` +
-        `• Email: registration-renewal-coa@coa.gov.in\n` +
+        `• Email: renewal-coa@coa.gov.in\n` +
         `• WhatsApp Helpdesk: +91 70429 39122\n` +
         `• Phone: 011-49412100\n\n` +
         `_Type "menu" to return to the main menu._`

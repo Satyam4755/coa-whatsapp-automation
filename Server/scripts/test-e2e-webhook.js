@@ -791,10 +791,10 @@ async function runE2ETests() {
   try {
     const directQueries = [
       { text: "Registration", expected: ["registration-coa@coa.gov.in", "011-49412100", "register-architect"] },
-      { text: "Renewal", expected: ["registration-renewal-coa@coa.gov.in", "+91 70429 39122", "renewal-registration"] },
+      { text: "Renewal", expected: ["renewal-coa@coa.gov.in", "+91 70429 39122", "renewal-registration"] },
       { text: "NATA", expected: ["https://www.nata.in"] },
       { text: "PGETA", expected: ["https://www.pgeta.in"] },
-      { text: "Education", expected: ["academic-coa@coa.gov.in", "011-49412100 (Ext. 205)", "https://coa.gov.in/architectural_institutions.php"] },
+      { text: "Education", expected: ["academic-coa@coa.gov.in", "011-49412100 (Ext. 253/263)", "https://coa.gov.in/architectural_institutions.php"] },
       { text: "Other CoA departments/services", expected: ["https://ecoa.in/samarthaya/public/requestQuery"] },
     ];
 
@@ -821,7 +821,7 @@ async function runE2ETests() {
   try {
     const naturalQueries = [
       { text: "How can I register?", expected: ["registration-coa@coa.gov.in", "register-architect"] },
-      { text: "How can I renew my registration?", expected: ["Procedure", "registration-renewal-coa@coa.gov.in", "+91 70429 39122"] },
+      { text: "How can I renew my registration?", expected: ["Procedure", "renewal-coa@coa.gov.in", "+91 70429 39122"] },
       { text: "I have a NATA related query", expected: ["https://www.nata.in"] },
       { text: "I have a PGETA query", expected: ["https://www.pgeta.in"] },
       { text: "I have a question regarding education", expected: ["academic-coa@coa.gov.in", "https://coa.gov.in/architectural_institutions.php"] },
@@ -879,7 +879,7 @@ async function runE2ETests() {
     countBefore = outgoingMessages.length;
     await simulateWebhookPost(createTextMessagePayload(TEST_USER, "Renewal"));
     resp = assertSingleResponseAndGet(countBefore);
-    assert.ok(resp.text.includes("registration-renewal-coa@coa.gov.in"));
+    assert.ok(resp.text.includes("renewal-coa@coa.gov.in"));
     console.log("  Step 4: 'Renewal' -> Renewal department details (1 response, no state leakage)");
 
     // 6. Direct CA/1975/00048 check for single response

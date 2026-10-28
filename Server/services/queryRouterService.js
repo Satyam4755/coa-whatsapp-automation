@@ -17,7 +17,7 @@ export const DEPARTMENT_DATA = {
   RENEWAL: {
     name: "Renewal Department",
     category: "Renewal",
-    email: "registration-renewal-coa@coa.gov.in",
+    email: "renewal-coa@coa.gov.in",
     whatsappHelpdesk: "+91 70429 39122",
     portal: "https://coa.org.in/e-services/renewal-registration",
     ticketSystem:
@@ -45,7 +45,7 @@ export const DEPARTMENT_DATA = {
     name: "Education / Academic Department",
     category: "Education",
     email: "academic-coa@coa.gov.in",
-    phone: "011-49412100 (Ext. 205)",
+    phone: "011-49412100 (Ext. 253/263)",
     website: "https://coa.gov.in/architectural_institutions.php",
     ticketSystem:
       "https://ecoa.in/samarthaya/public/requestQuery?lang=1&level=1&sublinkid=1317&lid=1189",
@@ -80,7 +80,7 @@ class QueryRouterService {
     if (deptKey === "RENEWAL") {
       return (
         `Dear Architect,\n\n` +
-        `Kindly email us your query at registration-renewal-coa@coa.gov.in or WhatsApp our CoA Renewal Helpdesk at +91 70429 39122.\n\n` +
+        `Kindly email us your query at renewal-coa@coa.gov.in or WhatsApp our CoA Renewal Helpdesk at +91 70429 39122.\n\n` +
         `Feel free to reach out here in case of any further issues.\n\n` +
         `Or visit https://coa.org.in/e-services/renewal-registration for more details\n\n` +
         `Or Ticket System:\nhttps://ecoa.in/samarthaya/public/requestQuery?lang=1&level=1&sublinkid=1317&lid=1189\n\n` +
@@ -107,7 +107,7 @@ class QueryRouterService {
     if (deptKey === "EDUCATION") {
       return (
         `Dear User,\n` +
-        `Kindly email us your query at academic-coa@coa.gov.in or contact our Academic Department at 011-49412100 (Ext. 205).\n` +
+        `Kindly email us your query at registrar-coa@coa.gov.in or contact our Academic Department at 011-49412100 (Ext. 253/263).\n` +
         `Feel free to reach out here in case of any further issues.\n` +
         `For more details, please visit: https://coa.gov.in/architectural_institutions.php`
       );

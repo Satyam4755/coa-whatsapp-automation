@@ -97,7 +97,7 @@ async function runTests() {
     const res = queryRouterService.classifyQuery("renewal enquiry and helpdesk number");
     assert.strictEqual(res.type, "DEPARTMENT_QUERY");
     assert.strictEqual(res.department, "RENEWAL");
-    assert.ok(res.response.includes("registration-renewal-coa@coa.gov.in"));
+    assert.ok(res.response.includes("renewal-coa@coa.gov.in"));
     assert.ok(res.response.includes("+91 70429 39122"));
     assert.ok(res.response.includes("https://coa.org.in/e-services/renewal-registration"));
   });
@@ -158,7 +158,7 @@ async function runTests() {
   test("9. Department Routing - Education and Academic Department queries with exact response", () => {
     const expectedEducationResponse =
       `Dear User,\n` +
-      `Kindly email us your query at academic-coa@coa.gov.in or contact our Academic Department at 011-49412100 (Ext. 205).\n` +
+      `Kindly email us your query at registrar-coa@coa.gov.in or contact our Academic Department at 011-49412100 (Ext. 253/263).\n` +
       `Feel free to reach out here in case of any further issues.\n` +
       `For more details, please visit: https://coa.gov.in/architectural_institutions.php`;
 
@@ -231,7 +231,7 @@ async function runTests() {
     // Renewal Department must NOT be overridden by "department"
     const renDept = queryRouterService.classifyQuery("Renewal Department");
     assert.strictEqual(renDept.department, "RENEWAL");
-    assert.ok(renDept.response.includes("registration-renewal-coa@coa.gov.in"));
+    assert.ok(renDept.response.includes("renewal-coa@coa.gov.in"));
 
     // Academic document with registration query must NOT be overridden by broad "academic"
     const regAcademic = queryRouterService.classifyQuery("academic documents required for architect registration");
@@ -241,7 +241,7 @@ async function runTests() {
     // Academic document with renewal query must NOT be overridden by broad "academic"
     const renAcademic = queryRouterService.classifyQuery("renewal with academic qualification");
     assert.strictEqual(renAcademic.department, "RENEWAL");
-    assert.ok(renAcademic.response.includes("registration-renewal-coa@coa.gov.in"));
+    assert.ok(renAcademic.response.includes("renewal-coa@coa.gov.in"));
 
     // Search architect with 'Academic' in name must NOT be overridden
     const searchArch = queryRouterService.classifyQuery("search architect Rajesh Academic");
@@ -257,7 +257,7 @@ async function runTests() {
     const formatted = faq.formatResponse();
     assert.ok(formatted.includes("Procedure"));
     assert.ok(formatted.includes("Required Documents"));
-    assert.ok(formatted.includes("registration-renewal-coa@coa.gov.in"));
+    assert.ok(formatted.includes("renewal-coa@coa.gov.in"));
     assert.ok(formatted.includes("+91 70429 39122"));
     assert.ok(formatted.includes("https://coa.org.in/e-services/renewal-registration"));
   });
@@ -516,7 +516,7 @@ async function runTests() {
   // 22. State Reset Verification - Architect lookup resets state and avoids old number reuse
   test("22. Safety Rule E - Architect search resets state after execution", () => {
     const userStates = { "919876543210": { awaiting: "search_architect", lastMessageId: "msg_1" } };
-    
+
     // Simulate lookup completion
     userStates["919876543210"] = { lastMessageId: "msg_1" }; // cleared awaiting
 
